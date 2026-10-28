@@ -14,8 +14,9 @@ const POLL_INTERVAL_MS = 5000;
 
 export type PendingAction = "start" | "shutdown" | null;
 
-/** `preferred`: default distro from the settings (undefined while they load). */
-export function useWsl(preferred?: string | null) {
+/** `preferred`: default distro from the settings (undefined while they load).
+ *  `active`: false while the window sits in the tray (polling pauses; the tray loop takes over). */
+export function useWsl(preferred?: string | null, active = true) {
   const [distros, setDistros] = useState<Distro[]>([]);
   const [info, setInfo] = useState<WslInfo | null>(null);
   const [selectedName, setSelectedName] = useState<string | null>(null);
@@ -55,10 +56,11 @@ export function useWsl(preferred?: string | null) {
   }, []);
 
   useEffect(() => {
+    if (!active) return;
     refresh();
     const id = window.setInterval(refresh, POLL_INTERVAL_MS);
     return () => window.clearInterval(id);
-  }, [refresh]);
+  }, [refresh, active]);
 
   // Apply the configured default distro once, as soon as both settings and list are in.
   const preferredApplied = useRef(false);

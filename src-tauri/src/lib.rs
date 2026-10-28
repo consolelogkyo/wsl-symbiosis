@@ -7,14 +7,19 @@ mod provisioner;
 mod settings;
 // Public so examples/pty_no_window.rs can exercise the real session code.
 pub mod terminal;
+mod tray;
 mod updater;
+mod vhdx;
 mod wsl;
+mod wslconfig;
 
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // First: a second launch (Start menu, while the app sits in the tray) focuses this one.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| tray::show_main(app)))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         // Auto-update via GitHub Releases (latest.json signed with .tauri-keys/symbiosis.key).
@@ -23,7 +28,15 @@ pub fn run() {
         .setup(|app| {
             let file = app.path().app_data_dir().ok().map(|dir| dir.join("settings.json"));
             app.manage(settings::SettingsStore::load(file));
+            tray::setup(app.handle())?;
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" && tray::on_close_requested(window.app_handle()) {
+                    api.prevent_close();
+                }
+            }
         })
         .manage(wsl::KeepAlive::default())
         .manage(metrics::HostMonitor::default())
@@ -32,6 +45,7 @@ pub fn run() {
         .manage(explorer::ToolIconCache::default())
         .manage(projects::ProjectRunner::default())
         .manage(provisioner::ProvisionLock::default())
+        .manage(tray::TrayState::default())
         .invoke_handler(tauri::generate_handler![
             wsl::list_distros,
             wsl::get_wsl_info,
@@ -82,6 +96,13 @@ pub fn run() {
             provisioner::list_online_distros,
             provisioner::should_open_setup,
             provisioner::run_provisioning_tasks,
+            settings::set_close_behavior,
+            tray::hide_to_tray,
+            tray::quit_application,
+            tray::set_tray_context,
+            wslconfig::get_wsl_config,
+            wslconfig::save_wsl_config,
+            vhdx::compact_distro_vhdx,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

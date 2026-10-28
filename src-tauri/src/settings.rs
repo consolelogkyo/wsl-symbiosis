@@ -34,6 +34,31 @@ pub struct Settings {
     /// The full-window setup (0.1.3) was finished or skipped once. False for anyone updating from
     /// 0.1.2, so they see it once. Once true it stays true (`save_settings` never clears it).
     pub setup_wizard_seen: bool,
+    /// What the window's ✕ / Alt+F4 does (tray.rs).
+    #[serde(deserialize_with = "lenient_close_behavior")]
+    pub close_behavior: CloseBehavior,
+}
+
+/// An unknown value (written by a newer version) means "ask", instead of failing the whole file
+/// (which would reset every setting and reopen the setup).
+fn lenient_close_behavior<'de, D: serde::Deserializer<'de>>(d: D) -> Result<CloseBehavior, D::Error> {
+    Ok(match String::deserialize(d)?.as_str() {
+        "tray" => CloseBehavior::Tray,
+        "quit" => CloseBehavior::Quit,
+        _ => CloseBehavior::Ask,
+    })
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CloseBehavior {
+    /// The frontend asks (CloseDialog), with "remember my choice".
+    #[default]
+    Ask,
+    /// Hide to the system tray: terminals and dev servers keep running.
+    Tray,
+    /// Stop projects, close terminals and exit.
+    Quit,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -84,6 +109,10 @@ impl SettingsStore {
 
     pub fn git_auth(&self) -> GitAuth {
         self.data.lock().unwrap().git_auth
+    }
+
+    pub fn close_behavior(&self) -> CloseBehavior {
+        self.data.lock().unwrap().close_behavior
     }
 
     pub fn set_wsl_reboot_pending(&self, pending: bool) -> Result<(), String> {
@@ -247,6 +276,15 @@ pub fn save_settings(store: State<'_, SettingsStore>, mut settings: Settings) ->
     Ok(snapshot(&store, saved))
 }
 
+/// "Lembrar minha escolha" in the close dialog: changes only this field.
+#[tauri::command]
+pub fn set_close_behavior(store: State<'_, SettingsStore>, behavior: CloseBehavior) -> Result<SettingsSnapshot, String> {
+    let mut next = store.get();
+    next.close_behavior = behavior;
+    let saved = store.save(next)?;
+    Ok(snapshot(&store, saved))
+}
+
 /// Live validation for the path fields: the normalized path, or why it can't be used.
 #[tauri::command]
 pub fn check_tool_path(path: String) -> Result<Option<String>, String> {
@@ -300,6 +338,23 @@ mod tests {
         assert_eq!(s.git_auth, GitAuth::Auto, "older settings files get the SSH fallback");
         let s: Settings = serde_json::from_str(r#"{"gitAuth":"ssh"}"#).unwrap();
         assert_eq!(s.git_auth, GitAuth::Ssh);
+    }
+
+    #[test]
+    fn close_behavior_serialization() {
+        // Settings files from 0.1.3 and older have no closeBehavior: ask.
+        let s: Settings = serde_json::from_str(r#"{"onboardingCompleted":true}"#).unwrap();
+        assert_eq!(s.close_behavior, CloseBehavior::Ask);
+        for (json, value) in [("ask", CloseBehavior::Ask), ("tray", CloseBehavior::Tray), ("quit", CloseBehavior::Quit)] {
+            let s: Settings = serde_json::from_str(&format!(r#"{{"closeBehavior":"{json}"}}"#)).unwrap();
+            assert_eq!(s.close_behavior, value);
+            let back = serde_json::to_value(&s).unwrap();
+            assert_eq!(back["closeBehavior"], json);
+        }
+        // A value from a newer version falls back to asking, keeping the rest of the file.
+        let s: Settings = serde_json::from_str(r#"{"closeBehavior":"minimize","onboardingCompleted":true}"#).unwrap();
+        assert_eq!(s.close_behavior, CloseBehavior::Ask);
+        assert!(s.onboarding_completed);
     }
 
     #[test]

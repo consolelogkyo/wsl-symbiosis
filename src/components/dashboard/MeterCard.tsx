@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
+import { InfoTip } from "../InfoTip";
 
 export interface Segment {
   label: string;
@@ -23,6 +24,8 @@ interface Props {
   legend?: boolean;
   footer?: ReactNode;
   action?: ReactNode;
+  /** Explains the card's terms (InfoTip next to the title). */
+  info?: ReactNode;
 }
 
 export function MeterCard({
@@ -37,14 +40,15 @@ export function MeterCard({
   legend = true,
   footer,
   action,
+  info,
 }: Props) {
   return (
     <div className="flex flex-col rounded-lg border border-zinc-800 bg-zinc-900 p-4">
       <div className="flex items-center gap-2">
         <Icon className="size-3.5 text-zinc-500" />
-        <span className="min-w-0 flex-1 truncate text-[11px] font-medium tracking-wider text-zinc-500 uppercase">
-          {title}
-        </span>
+        <span className="min-w-0 truncate text-[11px] font-medium tracking-wider text-zinc-500 uppercase">{title}</span>
+        {info && <InfoTip>{info}</InfoTip>}
+        <span className="flex-1" />
         {action}
       </div>
 

@@ -57,6 +57,10 @@ src/                      # frontend React
   lib/setup.ts            # tipos/invoke do provisioner.rs, MODULE_DEFS, assessModule (estado de cada módulo)
   views/SetupWizardView.tsx    # setup Zero-to-Hero que toma a janela inteira (5 etapas, progresso ao vivo)
   components/ToolSettings.tsx  # IdeGrid + ToolPathList (Configurações e setup); hooks/useToolPaths.ts
+  lib/tray.ts             # invoke()/eventos da bandeja (tray.rs): hide/quit, contexto, close-requested
+  components/CloseDialog.tsx   # ✕ com closeBehavior "ask": bandeja ou fechar, "Lembrar minha escolha"
+  lib/wslconfig.ts        # tipos/invoke do wslconfig.rs; components/WslConfigDialog.tsx (Limites do Linux)
+  components/dashboard/CompactVhdxDialog.tsx  # confirmar → compactar (UAC) → antes/depois
   components/             # Titlebar (janela sem bordas), Sidebar (+ AO VIVO), Logo, DistroSelect,
                           # StatusDot, SettingsDialog (abas Sistema & IDEs / Git / Atalhos; o 1º uso agora é o setup),
                           # ShortcutsSettings (gravador de atalhos, gestos de mouse, fixos),
@@ -83,6 +87,9 @@ src-tauri/src/
   git.rs                  # branches, git switch, fetch e pull --ff-only (mensagens de erro em pt-BR)
   updater.rs              # prepare_for_update: fecha terminais e para projetos antes do instalador
   provisioner.rs          # setup: inspeção, habilitar WSL, instalar Ubuntu, módulos (evento provision-progress)
+  tray.rs                 # bandeja: ícone, menu ao vivo (loop próprio), closeBehavior, quit limpo
+  wslconfig.rs            # editor não destrutivo do %USERPROFILE%\.wslconfig (IniDoc)
+  vhdx.rs                 # ext4.vhdx pelo registro (Lxss) e compactação elevada (Optimize-VHD/diskpart)
 scripts/build-release.mjs # npm run release:build → instalador assinado + latest.json em dist-release/
 src-tauri/icons/
   app-icon.svg            # fonte do ícone; regenerar com `npx tauri icon src-tauri/icons/app-icon.svg`
@@ -269,7 +276,7 @@ O usuário tem `Ubuntu` (procps) e `docker-desktop` (busybox). Scripts dentro da
 ### 3.7.3 Setup Zero-to-Hero (provisioner.rs, SetupWizardView)
 - 1º uso (`!onboardingCompleted`) ou `wslRebootPending` → `App` entra em `setupMode`: o setup **toma a
   janela inteira** (barra própria com WindowControls; sem Titlebar, Sidebar nem módulos), como o
-  onboarding de outras IDEs. 1ª etapa = Diagnóstico (só leitura). Reabrir: Configurações → 06.
+  onboarding de outras IDEs. 1ª etapa = Diagnóstico (só leitura). Reabrir: Configurações → 07.
 - **Quando abre:** `should_open_setup` → `setup_required` (testada): `!onboardingCompleted` ou
   `!setupWizardSeen` (quem vem da 0.1.2 vê uma vez) ou `wslRebootPending` ou nenhuma distro de
   desenvolvimento. `save_settings` nunca limpa `setupWizardSeen`.
@@ -301,6 +308,37 @@ O usuário tem `Ubuntu` (procps) e `docker-desktop` (busybox). Scripts dentro da
   de nomes fixos); o instalador só oferece Ubuntu (o Debian do catálogo pode ser EOL com mirrors 404);
   `apt-get update` com um repositório morto não pode abortar; cada módulo garante seu git/curl
   (`ensure_packages`); pacotes antigos da Store só registram a distro com `<distro>.exe install --root`.
+
+### 3.7.4 Segundo plano, .wslconfig e VHDX (0.1.4)
+- **Fechar a janela** passa sempre pelo `on_window_event(CloseRequested)` do `lib.rs` →
+  `tray::on_close_requested`, conforme `settings.closeBehavior`: `tray` esconde, `quit` chama
+  `tray::quit`, `ask` impede o fechamento e emite `close-requested` (o `CloseDialog` responde com
+  `hide_to_tray` / `quit_application`). O botão ✕ só chama `window.close()`; não duplique a lógica.
+- `tray::quit` esconde a janela, faz a limpeza (terminais + `stop_all_blocking`, com timeout) e só
+  então `app.exit(0)`. `stop_all_blocking` pula tarefas já com `stop_requested`, então a segunda
+  chamada (`RunEvent::Exit`) não faz nada e nunca liga a VM que um `wsl --shutdown` acabou de derrubar.
+- Valor desconhecido de `closeBehavior` no settings.json vira `ask` (não invalida o arquivo inteiro).
+- **Menu da bandeja**: um loop em Rust (5 s) monta o snapshot: distro (do `set_tray_context` enviado pela
+  janela; `wsl --list` só com a janela oculta), consumo (`metrics::VmSampler`, um snapshot do kernel,
+  sem wsl.exe) e tarefas `Run` ativas do `ProjectRunner`. Linhas de cabeçalho mudam por `set_text`;
+  o menu só é reconstruído quando a lista de projetos (ou o estado ligado/desligado) muda.
+- Com a janela oculta (`app-visibility` = false) o frontend **pausa** o polling (`useWsl`, `useMetrics`,
+  portas do `useActivity`). Ações da bandeja avisam a janela por `tray-notice` (toast) e
+  `wsl-changed` (refresh). `wsl::shutdown_all` é o único caminho de `wsl --shutdown` (Titlebar, bandeja,
+  .wslconfig, VHDX).
+- `tauri-plugin-single-instance` é o 1º plugin: abrir o app de novo mostra a janela que está na bandeja.
+- **.wslconfig** (`wslconfig.rs`): `IniDoc` preserva linhas, CRLF/LF, BOM, comentários inline e a grafia
+  das chaves. `apply` só grava os campos que mudaram em relação ao que o arquivo diz (valor escrito à mão
+  que o editor não entende fica intacto). `networkingMode`/`autoMemoryReclaim`/`sparseVhd` são
+  editados na seção onde o usuário já os tem (`[wsl2]` ↔ `[experimental]` mudaram entre versões do WSL).
+  Backup `.wslconfig.symbiosis.bak` só na 1ª edição. Tamanhos em base 1024 (`8GB`, `1536MB`, `0`).
+- **VHDX** (`vhdx.rs`): caminho = `HKCU\...\Lxss\{guid}` (`DistributionName`, `BasePath` sem `\\?\`,
+  `VhdFileName` ou `ext4.vhdx`). Entra nas métricas (`vhdx`), inclusive com a distro parada.
+  Compactar: `fstrim` como root (pode ligar a distro: ação do usuário) → `shutdown_all` → espera o
+  `vmmemWSL` sumir → um .ps1 elevado tenta `Optimize-VHD -Mode Full` e cai no `diskpart`
+  (`attach vdisk readonly` + `compact vdisk`). O caminho passa por `validate_vhdx_path` (só `X:\...\*.vhdx`,
+  sem `"`/controle/`..`) antes de entrar no script do diskpart.
+- Teste real só-leitura: `WSL_TEST_DISTRO=Ubuntu cargo test --lib live_vhdx -- --ignored --nocapture`.
 
 ### 3.8 Memória do WSL no Windows
 - Uma única chamada `NtQuerySystemInformation` por amostra, **sem cache de PID**, porque a VM nasce
@@ -339,7 +377,14 @@ utilitário de hardware. Zero gradientes, glows ou acentos coloridos decorativos
 - Ícones das IDEs: extraídos dos executáveis instalados (`get_tool_icons`, uma execução do
   PowerShell com `ExtractAssociatedIcon`, com cache). Use `<ToolIcon>`; sem ícone, cai no lucide.
   O Explorer fica de fora de propósito: mantém a pasta branca genérica (menos ruído visual).
-- Textos auxiliares longos vão em `<InfoTip>` (ícone "i" com tooltip), não fixos na tela.
+- Textos auxiliares longos vão em `<InfoTip>` (ícone "i" com tooltip), não fixos na tela. O tooltip é
+  renderizado via portal (fixed, z-100) e abre para cima quando falta espaço: nunca é cortado por
+  diálogos (`overflow-hidden`) nem por áreas com scroll.
+- **Público "soft user":** quem usa o app não precisa saber o que é VM, cache, NAT ou VHDX. Toda opção
+  que mexe em processos ou configurações diz o que faz e o que a pessoa vai notar, com nome técnico só
+  no tooltip. Nada de "Padrão / Sim / Não": as opções têm nomes ("Ligado", "Isolado (NAT)"), e a que
+  já é o comportamento do sistema é marcada "(padrão)". Escolhas fora do recomendado pedem confirmação
+  explicando o porquê.
 - Responsividade por **container query** (`@container` + `@max-5xl:` etc.), não por viewport: a
   linha do Explorador abaixo de 64rem esconde as tags, os chips de limpeza/Instalar e o rótulo
   da IDE padrão (vira bolinha branca só com ícone). Barras com rótulos usam `whitespace-nowrap`.

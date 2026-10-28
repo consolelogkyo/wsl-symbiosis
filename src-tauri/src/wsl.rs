@@ -283,16 +283,21 @@ pub async fn start_distro(
 }
 
 #[tauri::command]
-pub async fn shutdown_wsl(
-    keep_alive: tauri::State<'_, KeepAlive>,
-    terminals: tauri::State<'_, crate::terminal::TerminalManager>,
-    projects: tauri::State<'_, crate::projects::ProjectRunner>,
-) -> Result<(), String> {
+pub async fn shutdown_wsl(app: tauri::AppHandle) -> Result<(), String> {
+    shutdown_all(&app).await
+}
+
+/// `wsl --shutdown` the clean way, from anywhere (Titlebar, tray, .wslconfig, VHDX compaction).
+/// Emits `wsl-changed` so the window refreshes even when the action came from the tray.
+pub(crate) async fn shutdown_all(app: &tauri::AppHandle) -> Result<(), String> {
+    use tauri::{Emitter, Manager};
     // Close shells first so they exit cleanly instead of dying with the VM.
-    terminals.close_all();
+    app.state::<crate::terminal::TerminalManager>().close_all();
     // Running projects die with the VM: report them as stopped, not as failures.
-    projects.mark_all_stopping();
-    shutdown(&keep_alive).await
+    app.state::<crate::projects::ProjectRunner>().mark_all_stopping();
+    let result = shutdown(&app.state::<KeepAlive>()).await;
+    let _ = app.emit("wsl-changed", ());
+    result
 }
 
 async fn start(name: &str, keep_alive: &KeepAlive) -> Result<(), String> {

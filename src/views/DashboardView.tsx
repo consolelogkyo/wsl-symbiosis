@@ -8,13 +8,19 @@ import {
   Layers,
   Loader2,
   MemoryStick,
+  Minimize2,
   Monitor,
   Play,
   PowerOff,
+  SlidersHorizontal,
   Star,
   TriangleAlert,
 } from "lucide-react";
-import type { Distro, DropCachesResult, GuestMetrics, HostMetrics, WslInfo, WslResourceMetrics } from "../lib/wsl";
+import type { Distro, DropCachesResult, GuestMetrics, HostMetrics, VhdxInfo, WslInfo, WslResourceMetrics } from "../lib/wsl";
+import { WslConfigDialog } from "../components/WslConfigDialog";
+import { CompactVhdxDialog, VHDX_EXPLAINED } from "../components/dashboard/CompactVhdxDialog";
+import { useActivityContext } from "../hooks/useActivity";
+import { isActive } from "../lib/projects";
 import { errorMessage, freeCachedMemory } from "../lib/wsl";
 import { LEVEL_BAR, LEVEL_DOT, LEVEL_TEXT, formatBytes, level, percent } from "../lib/format";
 import { BTN_GHOST, BTN_PRIMARY, CARD, LABEL } from "../lib/ui";
@@ -47,7 +53,7 @@ function Stat({ label, value, icon: Icon }: { label: string; value: string; icon
   );
 }
 
-function SectionTitle({ children, live, info }: { children: string; live?: boolean; info?: ReactNode }) {
+function SectionTitle({ children, live, info, action }: { children: string; live?: boolean; info?: ReactNode; action?: ReactNode }) {
   return (
     <div className="mb-3 flex items-center gap-2.5">
       <h2 className={LABEL}>{children}</h2>
@@ -59,7 +65,37 @@ function SectionTitle({ children, live, info }: { children: string; live?: boole
         </span>
       )}
       <span className="h-px flex-1 bg-zinc-800" />
+      {action}
     </div>
+  );
+}
+
+/** "Arquivo no Windows: 38.4 GB · Recuperável: ~22 GB". */
+function VhdxLine({ vhdx, linuxUsed }: { vhdx: VhdxInfo; linuxUsed: number | null }) {
+  const reclaimable = linuxUsed !== null ? Math.max(0, vhdx.fileSize - linuxUsed) : null;
+  return (
+    <span className="text-zinc-500" title={vhdx.path}>
+      Arquivo no Windows: <span className="font-mono text-zinc-200">{formatBytes(vhdx.fileSize)}</span>
+      {reclaimable !== null && (
+        <>
+          {" "}· Recuperável: <span className="font-mono text-zinc-200">~{formatBytes(reclaimable)}</span>
+        </>
+      )}
+    </span>
+  );
+}
+
+function CompactButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title="Devolve ao Windows o espaço dos arquivos que você já apagou no Linux"
+      className={`${BTN_GHOST} -my-1 px-2 py-0.5 text-[11px]`}
+    >
+      <Minimize2 className="size-3" />
+      Compactar VHDX
+    </button>
   );
 }
 
@@ -103,7 +139,13 @@ function HostMeter({ host }: { host: HostMetrics }) {
   );
 }
 
-function GuestMeters({ distro, guest, onChanged }: { distro: string; guest: GuestMetrics; onChanged: () => void }) {
+function GuestMeters({ distro, guest, vhdx, onChanged, onCompact }: {
+  distro: string;
+  guest: GuestMetrics;
+  vhdx: VhdxInfo | null;
+  onChanged: () => void;
+  onCompact: () => void;
+}) {
   const [dropping, setDropping] = useState(false);
   const [dropResult, setDropResult] = useState<DropCachesResult | null>(null);
   const [dropError, setDropError] = useState<string | null>(null);
@@ -177,7 +219,16 @@ function GuestMeters({ distro, guest, onChanged }: { distro: string; guest: Gues
 
       <MeterCard
         icon={HardDrive}
-        title="Disco virtual (VHDX) em /"
+        title="Disco do Linux (VHDX)"
+        info={
+          <>
+            {VHDX_EXPLAINED}
+            <span className="mt-2 block">
+              A barra mostra o espaço que o Linux usa por dentro. <b className="font-semibold text-zinc-100">Recuperável</b> é quanto o
+              arquivo ocupa no Windows a mais do que isso: espaço de arquivos já apagados que o Compactar VHDX devolve.
+            </span>
+          </>
+        }
         value={disk ? formatBytes(disk.used) : "—"}
         valueClassName={LEVEL_TEXT[level(diskPct)]}
         dot={disk ? LEVEL_DOT[level(diskPct)] : undefined}
@@ -185,11 +236,16 @@ function GuestMeters({ distro, guest, onChanged }: { distro: string; guest: Gues
         total={disk?.total ?? 0}
         legend={false}
         segments={disk ? [{ label: "Usado", value: disk.used, className: LEVEL_BAR[level(diskPct)] }] : []}
+        action={vhdx && <CompactButton onClick={onCompact} />}
         footer={
-          disk && (
-            <span className="text-zinc-500">
-              {formatBytes(disk.available)} livres · <span className="font-mono">{disk.filesystem}</span>
-            </span>
+          vhdx ? (
+            <VhdxLine vhdx={vhdx} linuxUsed={disk?.used ?? null} />
+          ) : (
+            disk && (
+              <span className="text-zinc-500">
+                {formatBytes(disk.available)} livres · <span className="font-mono">{disk.filesystem}</span>
+              </span>
+            )
           )
         }
       />
@@ -220,11 +276,13 @@ function GuestMeters({ distro, guest, onChanged }: { distro: string; guest: Gues
   );
 }
 
-function GuestPlaceholder({ selected, pending, onStart, error }: {
+function GuestPlaceholder({ selected, pending, onStart, error, vhdx, onCompact }: {
   selected: Distro;
   pending: PendingAction;
   onStart: () => void;
   error: string | null;
+  vhdx: VhdxInfo | null;
+  onCompact: () => void;
 }) {
   const running = selected.state === "Running";
   return (
@@ -248,6 +306,13 @@ function GuestPlaceholder({ selected, pending, onStart, error }: {
             {pending === "start" ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
             Iniciar Distro para monitorar processos
           </button>
+          {vhdx && (
+            <div className="mt-2 flex flex-wrap items-center justify-center gap-x-3 gap-y-2 border-t border-zinc-800 pt-3 text-xs">
+              <HardDrive className="size-3.5 text-zinc-600" />
+              <VhdxLine vhdx={vhdx} linuxUsed={null} />
+              <CompactButton onClick={onCompact} />
+            </div>
+          )}
         </>
       )}
     </div>
@@ -258,6 +323,14 @@ export function DashboardView({ distros, selected, info, pending, telemetry, onS
   const running = distros.filter((d) => d.state === "Running").length;
   const { metrics, error, refresh } = telemetry;
   const guest = metrics?.guest ?? null;
+  const vhdx = metrics?.vhdx ?? null;
+  const { notify, tasks } = useActivityContext();
+  const [configOpen, setConfigOpen] = useState(false);
+  // Captured when opened: the live metrics may lose the VHDX while the file is being compacted.
+  const [compacting, setCompacting] = useState<{ distro: string; vhdx: VhdxInfo; linuxUsed: number | null } | null>(null);
+  const openCompact = () =>
+    selected && vhdx && setCompacting({ distro: selected.name, vhdx, linuxUsed: guest?.disk?.used ?? null });
+  const runningProjects = tasks.filter((t) => t.kind === "run" && isActive(t)).length;
 
   return (
     <div className="space-y-7 p-6">
@@ -278,6 +351,12 @@ export function DashboardView({ distros, selected, info, pending, telemetry, onS
                 processos são de <span className="font-medium text-zinc-100">{selected.name}</span>.
               </>
             }
+            action={
+              <button type="button" onClick={() => setConfigOpen(true)} className={`${BTN_GHOST} -my-1 px-2.5 py-0.5 text-[11px]`}>
+                <SlidersHorizontal className="size-3" />
+                Limites do Linux
+              </button>
+            }
           >
             Recursos
           </SectionTitle>
@@ -291,17 +370,50 @@ export function DashboardView({ distros, selected, info, pending, telemetry, onS
               <div className={`${CARD} h-40 animate-pulse`} />
             )}
             {guest ? (
-              <GuestMeters distro={selected.name} guest={guest} onChanged={refresh} />
+              <GuestMeters
+                distro={selected.name}
+                guest={guest}
+                vhdx={vhdx}
+                onChanged={refresh}
+                onCompact={openCompact}
+              />
             ) : (
               <GuestPlaceholder
                 selected={selected}
                 pending={pending}
                 onStart={onStart}
                 error={metrics?.guestError ?? null}
+                vhdx={vhdx}
+                onCompact={openCompact}
               />
             )}
           </div>
         </section>
+      )}
+
+      {configOpen && (
+        <WslConfigDialog
+          onClose={() => setConfigOpen(false)}
+          onSaved={(restarted) => {
+            setConfigOpen(false);
+            notify({
+              tone: "success",
+              title: "Limites do Linux salvos",
+              detail: restarted ? "O WSL foi reiniciado: os novos limites já valem." : "Valem a partir do próximo início do WSL.",
+            });
+            refresh();
+          }}
+        />
+      )}
+      {compacting && (
+        <CompactVhdxDialog
+          distro={compacting.distro}
+          vhdx={compacting.vhdx}
+          linuxUsed={compacting.linuxUsed}
+          runningProjects={runningProjects}
+          onClose={() => setCompacting(null)}
+          onWslRestarted={refresh}
+        />
       )}
 
       {selected && guest && (

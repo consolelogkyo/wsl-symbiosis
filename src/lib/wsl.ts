@@ -99,6 +99,25 @@ export interface WslResourceMetrics {
   host: HostMetrics;
   guest: GuestMetrics | null;
   guestError: string | null;
+  /** The distro's ext4.vhdx on Windows (also while stopped); null for WSL1 / not found. */
+  vhdx: VhdxInfo | null;
+}
+
+// Mirrors of src-tauri/src/vhdx.rs.
+
+export interface VhdxInfo {
+  path: string;
+  /** What the file takes on the Windows disk. */
+  fileSize: number;
+}
+
+export interface VhdxCompactResult {
+  path: string;
+  sizeBefore: number;
+  sizeAfter: number;
+  reclaimedBytes: number;
+  method: "optimize-vhd" | "diskpart";
+  trimmed: boolean;
 }
 
 export interface DropCachesResult {
@@ -132,6 +151,9 @@ export const freeCachedMemory = (distro: string) =>
   invoke<DropCachesResult>("free_wsl_cached_memory", { distro });
 export const killLinuxProcess = (distro: string, pid: number, signal: KillSignal) =>
   invoke<void>("kill_linux_process", { distro, pid, signal });
+/** fstrim, wsl --shutdown, then Optimize-VHD / diskpart elevated (one UAC prompt). Takes minutes. */
+export const compactDistroVhdx = (distro: string) =>
+  invoke<VhdxCompactResult>("compact_distro_vhdx", { distro });
 
 /** Tauri rejects with the Rust `Err(String)`; normalize anything else. */
 export function errorMessage(err: unknown): string {

@@ -97,7 +97,7 @@ pub struct TaskInfo {
 }
 
 impl TaskInfo {
-    fn active(&self) -> bool {
+    pub(crate) fn active(&self) -> bool {
         matches!(self.status, TaskStatus::Starting | TaskStatus::Running | TaskStatus::Stopping)
     }
 }
@@ -260,7 +260,7 @@ fn emit(sink: &TaskSink, task: &Task) {
     sink(&info);
 }
 
-fn app_sink(app: AppHandle) -> TaskSink {
+pub(crate) fn app_sink(app: AppHandle) -> TaskSink {
     Arc::new(move |info: &TaskInfo| {
         let _ = app.emit("project-task", info);
     })
@@ -476,14 +476,16 @@ impl ProjectRunner {
         }
     }
 
-    /// App exit: stop every active task, waiting at most a few seconds in total.
+    /// App exit: stop every active task, waiting at most a few seconds in total. Tasks already
+    /// being stopped are skipped, so a second call (quit, then `RunEvent::Exit`) is a no-op and
+    /// never boots a VM that `wsl --shutdown` just took down.
     pub fn stop_all_blocking(&self) {
         let targets: Vec<(String, Option<u32>, Arc<Task>)> = self
             .tasks
             .lock()
             .unwrap()
             .values()
-            .filter(|t| t.info.lock().unwrap().active())
+            .filter(|t| t.info.lock().unwrap().active() && !t.stop_requested.load(Ordering::SeqCst))
             .map(|t| {
                 let i = t.info.lock().unwrap();
                 (i.distro.clone(), i.pid, Arc::clone(t))

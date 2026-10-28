@@ -1,6 +1,6 @@
 [package]
 name = "wsl-symbiosis"
-version = "0.1.3"
+version = "0.1.4"
 description = "Simbiose visual entre Windows e WSL2"
 authors = ["WSL Symbiosis"]
 edition = "2024"
@@ -18,7 +18,8 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+# tray-icon: background mode (tray.rs).
+tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 # preserve_order: the Windows Terminal settings.json is rewritten keeping the user's key order.
@@ -29,10 +30,14 @@ portable-pty = "0.9.0"
 tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+# With the app living in the tray, opening it again must focus the running instance.
+tauri-plugin-single-instance = "2"
 
 [target.'cfg(windows)'.dependencies]
 # NtQuerySystemInformation: reads the protected vmmemWSL process without OpenProcess.
 ntapi = "0.4"
+# HKCU\...\Lxss: where each distro's ext4.vhdx lives (vhdx.rs).
+winreg = "0.56"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

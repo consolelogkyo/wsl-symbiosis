@@ -37,6 +37,8 @@ pub struct WslResourceMetrics {
     pub guest: Option<GuestMetrics>,
     /// Set when the distro is running but the guest probe failed.
     pub guest_error: Option<String>,
+    /// The distro's ext4.vhdx on the Windows side (read from the registry; also while stopped).
+    pub vhdx: Option<crate::vhdx::VhdxInfo>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -150,8 +152,45 @@ pub struct HostMonitor(Arc<Mutex<HostState>>);
 #[derive(Default)]
 struct HostState {
     sys: System,
+    vm: VmSampler,
+}
+
+/// The VM's CPU usage is a delta between two process snapshots: each caller keeps its own
+/// previous sample (the Dashboard's HostMonitor, the tray loop).
+#[derive(Default)]
+pub(crate) struct VmSampler {
     /// Previous (pid, CPU time in 100ns units, instant) of the VM process.
-    vm_cpu: Option<(u32, u64, Instant)>,
+    prev: Option<(u32, u64, Instant)>,
+}
+
+impl VmSampler {
+    /// The VM and WSL's helper processes, from one fresh kernel snapshot.
+    pub(crate) fn sample(&mut self, cpu_count: usize) -> (Option<VmProcess>, WslHelpers) {
+        // Re-read on each sample: the VM appears and disappears with `wsl --shutdown`, so nothing
+        // is cached by PID. It also works for vmmemWSL, a protected process OpenProcess can't open
+        // without admin.
+        let entries = nt::snapshot();
+        let (vm_entry, helpers) = summarize_wsl(&entries);
+        let now = Instant::now();
+        let vm = vm_entry.map(|e| {
+            let cpu_usage = match self.prev {
+                Some((prev_pid, prev_time, at)) if prev_pid == e.pid => {
+                    let elapsed = now.duration_since(at).as_nanos() as f64 / 100.0;
+                    let used = e.cpu_time.saturating_sub(prev_time) as f64;
+                    (used / (elapsed * cpu_count.max(1) as f64) * 100.0).clamp(0.0, 100.0) as f32
+                }
+                _ => 0.0,
+            };
+            VmProcess { name: e.display_name.clone(), pid: e.pid, memory: e.memory(), cpu_usage }
+        });
+        self.prev = vm_entry.map(|e| (e.pid, e.cpu_time, now));
+        (vm, helpers)
+    }
+}
+
+/// Whether the WSL utility VM process exists (it lingers a moment after `wsl --shutdown`).
+pub(crate) fn vm_running() -> bool {
+    summarize_wsl(&nt::snapshot()).0.is_some()
 }
 
 /// Previous `/proc/stat` sample per distro, to compute guest CPU usage as a delta.
@@ -188,25 +227,7 @@ impl HostState {
         sys.refresh_memory();
         sys.refresh_cpu_usage();
         let cpu_count = sys.cpus().len().max(1);
-
-        // One kernel snapshot of every process, re-read on each sample: the VM appears and
-        // disappears with `wsl --shutdown`, so nothing is cached by PID. It also works for
-        // vmmemWSL, a protected process OpenProcess can't open without admin.
-        let entries = nt::snapshot();
-        let (vm_entry, wsl_helpers) = summarize_wsl(&entries);
-        let now = Instant::now();
-        let vm = vm_entry.map(|e| {
-            let cpu_usage = match self.vm_cpu {
-                Some((prev_pid, prev_time, at)) if prev_pid == e.pid => {
-                    let elapsed = now.duration_since(at).as_nanos() as f64 / 100.0;
-                    let used = e.cpu_time.saturating_sub(prev_time) as f64;
-                    (used / (elapsed * cpu_count as f64) * 100.0).clamp(0.0, 100.0) as f32
-                }
-                _ => 0.0,
-            };
-            VmProcess { name: e.display_name.clone(), pid: e.pid, memory: e.memory(), cpu_usage }
-        });
-        self.vm_cpu = vm_entry.map(|e| (e.pid, e.cpu_time, now));
+        let (vm, wsl_helpers) = self.vm.sample(cpu_count);
 
         HostMetrics {
             total_memory: sys.total_memory(),
@@ -602,6 +623,8 @@ pub(crate) async fn collect_metrics(
         host: host?,
         guest,
         guest_error,
+        // A registry read + one file stat: microseconds.
+        vhdx: crate::vhdx::locate(distro).ok(),
     })
 }
 

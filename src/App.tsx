@@ -15,10 +15,12 @@ import { TaskLogDrawer } from "./components/TaskLogDrawer";
 import { UpdateDialog } from "./components/UpdateDialog";
 import { UpdaterContext, useUpdater } from "./hooks/useUpdater";
 import { SettingsSnapshot, getSettings } from "./lib/settings";
+import { CloseDialog } from "./components/CloseDialog";
+import { onAppVisibility, onCloseRequested, onTrayNotice, onWslChanged, setTrayContext, subscribe } from "./lib/tray";
+import { isActive } from "./lib/projects";
 import { BANNER_ERROR } from "./lib/ui";
 import type { ToolId } from "./lib/explorer";
 import { NAV_ITEMS, type ViewId } from "./views";
-import { SetupWizardView } from "./views/SetupWizardView";
 import { shouldOpenSetup } from "./lib/setup";
 import { DashboardView } from "./views/DashboardView";
 import { ExplorerView } from "./views/ExplorerView";
@@ -30,6 +32,8 @@ const FORCE_SETUP = import.meta.env.DEV && import.meta.env.VITE_FORCE_SETUP === 
 
 // xterm is heavy; load it only when the Terminal screen is opened.
 const TerminalView = lazy(() => import("./views/TerminalView").then((m) => ({ default: m.TerminalView })));
+// The setup runs once per machine: kept out of the main bundle.
+const SetupWizardView = lazy(() => import("./views/SetupWizardView").then((m) => ({ default: m.SetupWizardView })));
 
 export default function App() {
   const [view, setView] = useState<ViewId>("dashboard");
@@ -44,6 +48,10 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   // First-run setup: takes over the whole window (no sidebar, no modules) until finished/skipped.
   const [setupMode, setSetupMode] = useState(false);
+  // ✕ / Alt+F4 with closeBehavior "ask" (the backend kept the window open).
+  const [closeAsked, setCloseAsked] = useState(false);
+  // False while the window sits in the tray: polling pauses, the tray loop (Rust) takes over.
+  const [visible, setVisible] = useState(true);
 
   // The setup opens by itself on first run, after updating from 0.1.2, after the WSL restart,
   // or when there is no development distro (provisioner::setup_required).
@@ -67,11 +75,36 @@ export default function App() {
       );
   }, []);
 
-  const wsl = useWsl(settings ? settings.defaultDistro : undefined);
+  const wsl = useWsl(settings ? settings.defaultDistro : undefined, visible);
   // The sidebar's live panel needs telemetry on every screen; faster while on the Dashboard.
-  const telemetry = useMetrics(wsl.selected?.name ?? null, view === "dashboard" ? 3000 : 5000);
+  const telemetry = useMetrics(wsl.selected?.name ?? null, view === "dashboard" ? 3000 : 5000, visible);
   // Projects started from the Explorer + everything listening in the distro (sidebar, rows, toasts).
-  const activity = useActivity(wsl.selected?.name ?? null, wsl.selected?.state === "Running");
+  const activity = useActivity(wsl.selected?.name ?? null, visible && wsl.selected?.state === "Running");
+
+  // Background mode (tray.rs): close requests, hide/show, actions taken from the tray menu.
+  const { notify } = activity;
+  const refreshWsl = wsl.refresh;
+  useEffect(() => subscribe(() => onCloseRequested(() => setCloseAsked(true))), []);
+  useEffect(() => subscribe(() => onAppVisibility(setVisible)), []);
+  useEffect(() => subscribe(() => onWslChanged(refreshWsl)), [refreshWsl]);
+  useEffect(
+    () => subscribe(() => onTrayNotice((n) => notify({ tone: n.tone, title: n.title, detail: n.detail ?? undefined }))),
+    [notify],
+  );
+  // The tray menu talks about the distro selected here.
+  const selectedName = wsl.selected?.name ?? null;
+  const selectedRunning = wsl.selected?.state === "Running";
+  useEffect(() => {
+    setTrayContext(selectedName, selectedRunning).catch(() => {});
+  }, [selectedName, selectedRunning]);
+  const runningProjects = activity.tasks.filter((t) => t.kind === "run" && isActive(t)).length;
+  const closeDialog = closeAsked && (
+    <CloseDialog
+      runningProjects={runningProjects}
+      onCancel={() => setCloseAsked(false)}
+      onRemembered={setSettings}
+    />
+  );
   // git pull queue (Explorer): one repository at a time, keeps going across screens.
   const gitQueue = useGitQueue(activity.notify);
   // Auto-update (GitHub Releases): silent check after start-up, pill in the Titlebar.
@@ -87,10 +120,12 @@ export default function App() {
 
   // Until the startup decision is in (settings + should_open_setup, a few ms), draw only the
   // frame: no flash of the app before the setup takes over.
-  if (!settings) return <div className="h-full bg-void" />;
+  if (!settings) return <div className="h-full bg-void">{closeDialog}</div>;
 
   if (setupMode) {
     return (
+      <Suspense fallback={<div className="h-full bg-void" />}>
+      {closeDialog}
       <SetupWizardView
         // Intro + "Primeiro acesso" also for whoever sees the setup for the first time (from 0.1.2).
         firstRun={FORCE_SETUP || !settings.onboardingCompleted || !settings.setupWizardSeen}
@@ -104,6 +139,7 @@ export default function App() {
           navigate("dashboard");
         }}
       />
+      </Suspense>
     );
   }
 
@@ -210,6 +246,7 @@ export default function App() {
       )}
 
       {updater.dialogOpen && <UpdateDialog />}
+      {closeDialog}
 
       <TaskLogDrawer />
       <div className="pointer-events-none fixed right-4 bottom-4 z-50 flex w-96 flex-col gap-2">

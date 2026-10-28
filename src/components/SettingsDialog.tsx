@@ -5,7 +5,7 @@ import { GitSettings } from "./GitSettings";
 import type { Distro, WslInfo } from "../lib/wsl";
 import { errorMessage, getWslInfo } from "../lib/wsl";
 import type { ToolId } from "../lib/explorer";
-import { type GitAuth, SettingsSnapshot, saveSettings } from "../lib/settings";
+import { type CloseBehavior, type GitAuth, SettingsSnapshot, saveSettings } from "../lib/settings";
 import { reloadTools, useTools } from "../hooks/useTools";
 import { useToolPaths } from "../hooks/useToolPaths";
 import { BTN_GHOST, BTN_PRIMARY } from "../lib/ui";
@@ -28,6 +28,12 @@ interface Props {
 }
 
 type Tab = "system" | "git" | "shortcuts";
+
+const CLOSE_OPTIONS: { id: CloseBehavior; label: string; detail: string }[] = [
+  { id: "ask", label: "Perguntar sempre", detail: "Mostra as duas opções a cada vez." },
+  { id: "tray", label: "Minimizar para a bandeja", detail: "Terminais e servidores continuam rodando." },
+  { id: "quit", label: "Fechar definitivamente", detail: "Para os servidores, fecha os terminais e sai." },
+];
 
 const TABS: { id: Tab; label: string; icon: typeof Keyboard }[] = [
   { id: "system", label: "Sistema & IDEs", icon: MonitorCog },
@@ -57,6 +63,7 @@ export function SettingsDialog({ onboarding, settings, distros, info: initialInf
   const [defaultIde, setDefaultIde] = useState<ToolId | null>((settings.defaultIde as ToolId | null) ?? null);
   const [shortcuts, setShortcuts] = useState<Shortcuts>(() => resolveShortcuts(settings.shortcuts));
   const [gitAuth, setGitAuth] = useState<GitAuth>(settings.gitAuth ?? "auto");
+  const [closeBehavior, setCloseBehavior] = useState<CloseBehavior>(settings.closeBehavior ?? "ask");
   const [tab, setTab] = useState<Tab>("system");
   const [saving, setSaving] = useState(false);
 
@@ -103,6 +110,7 @@ export function SettingsDialog({ onboarding, settings, distros, info: initialInf
         defaultIde,
         shortcuts: changedShortcuts,
         gitAuth,
+        closeBehavior,
       });
       await reloadTools();
       onSaved(saved);
@@ -240,9 +248,41 @@ export function SettingsDialog({ onboarding, settings, distros, info: initialInf
             />
           </Section>
 
+          <Section index="05" title="Ao fechar a janela" hint="Botão ✕ e Alt+F4">
+            <div className="grid grid-cols-3 gap-2" role="radiogroup">
+              {CLOSE_OPTIONS.map((o) => {
+                const active = closeBehavior === o.id;
+                return (
+                  <button
+                    key={o.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={active}
+                    onClick={() => setCloseBehavior(o.id)}
+                    className={`rounded-lg border px-3.5 py-3 text-left transition-colors ${
+                      active ? "border-zinc-100 bg-zinc-900" : "border-zinc-800 hover:border-zinc-600"
+                    }`}
+                  >
+                    <span className="flex items-center gap-2 text-sm font-medium text-zinc-100">
+                      <span
+                        className={`flex size-3.5 shrink-0 items-center justify-center rounded-full border ${
+                          active ? "border-zinc-100" : "border-zinc-600"
+                        }`}
+                      >
+                        {active && <span className="size-1.5 rounded-full bg-zinc-100" />}
+                      </span>
+                      {o.label}
+                    </span>
+                    <span className="mt-1 block text-[11px] leading-relaxed text-zinc-500">{o.detail}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </Section>
+
           <UpdatesSection />
 
-          <Section index="06" title="Configuração inicial" hint="Setup Zero-to-Hero">
+          <Section index="07" title="Configuração inicial" hint="Setup Zero-to-Hero">
             <div className="flex items-center gap-3 rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3">
               <p className="flex-1 text-xs leading-relaxed text-zinc-500">
                 Refaz o diagnóstico da máquina e permite instalar ou reparar WSL, Ubuntu, Windows Terminal, zsh e Node.
@@ -319,7 +359,7 @@ function UpdatesSection() {
               : { label: "Ainda não verificado", dot: "bg-zinc-600" };
 
   return (
-    <Section index="05" title="Atualizações do aplicativo" hint="GitHub Releases · verificação automática ao abrir">
+    <Section index="06" title="Atualizações do aplicativo" hint="GitHub Releases · verificação automática ao abrir">
       <div className="grid grid-cols-3 divide-x divide-zinc-800 rounded-lg border border-zinc-800 bg-zinc-900">
         <Cell label="Versão instalada" mono>
           {currentVersion ? `v${currentVersion}` : "—"}

@@ -18,9 +18,12 @@ export interface Settings {
   wslRebootPending?: boolean;
   /** The full-window setup was finished or skipped once (false after updating from 0.1.2). */
   setupWizardSeen?: boolean;
+  /** What ✕ / Alt+F4 does: ask (CloseDialog), hide to the tray, or quit. */
+  closeBehavior?: CloseBehavior;
 }
 
 export type GitAuth = "auto" | "ssh" | "remote";
+export type CloseBehavior = "ask" | "tray" | "quit";
 
 export interface SettingsSnapshot extends Settings {
   /** settings.json location, or null when settings live in memory only. */
@@ -29,5 +32,8 @@ export interface SettingsSnapshot extends Settings {
 
 export const getSettings = () => invoke<SettingsSnapshot>("get_settings");
 export const saveSettings = (settings: Settings) => invoke<SettingsSnapshot>("save_settings", { settings });
+/** "Lembrar minha escolha" in the close dialog (changes only this field). */
+export const setCloseBehavior = (behavior: CloseBehavior) =>
+  invoke<SettingsSnapshot>("set_close_behavior", { behavior });
 /** Normalized path, null for empty input; rejects with the reason it can't be used. */
 export const checkToolPath = (path: string) => invoke<string | null>("check_tool_path", { path });
