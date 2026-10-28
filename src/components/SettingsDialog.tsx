@@ -1,17 +1,17 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { open as pickFile } from "@tauri-apps/plugin-dialog";
 import { useUpdaterContext } from "../hooks/useUpdater";
-import { AlertTriangle, ArrowUpCircle, Check, FolderSearch, GitBranch, Keyboard, Loader2, MonitorCog, RefreshCw, Star, X } from "lucide-react";
+import { AlertTriangle, ArrowUpCircle, Check, GitBranch, Keyboard, Loader2, MonitorCog, RefreshCw, Star, Wand2, X } from "lucide-react";
 import { GitSettings } from "./GitSettings";
 import type { Distro, WslInfo } from "../lib/wsl";
 import { errorMessage, getWslInfo } from "../lib/wsl";
-import { IDE_IDS, type ToolId, type ToolInfo } from "../lib/explorer";
-import { type GitAuth, SettingsSnapshot, checkToolPath, saveSettings } from "../lib/settings";
+import type { ToolId } from "../lib/explorer";
+import { type GitAuth, SettingsSnapshot, saveSettings } from "../lib/settings";
 import { reloadTools, useTools } from "../hooks/useTools";
-import { BTN_GHOST, BTN_PRIMARY, FIELD, INPUT } from "../lib/ui";
+import { useToolPaths } from "../hooks/useToolPaths";
+import { BTN_GHOST, BTN_PRIMARY } from "../lib/ui";
 import { LogoMark } from "./Logo";
 import { StatusDot } from "./StatusDot";
-import { ToolIcon, primaryIde } from "./explorer/OpenInButtons";
+import { IdeGrid, ToolPathList } from "./ToolSettings";
 import { ShortcutsSettings } from "./ShortcutsSettings";
 import { SHORTCUT_DEFS, type ShortcutId, type Shortcuts, resolveShortcuts } from "../lib/shortcuts";
 
@@ -23,9 +23,10 @@ interface Props {
   info: WslInfo | null;
   onSaved: (settings: SettingsSnapshot) => void;
   onClose: () => void;
+  /** Reopens the full-screen first-run setup. */
+  onOpenSetup: () => void;
 }
 
-type PathCheck = { state: "idle" | "checking" | "ok" | "error"; message?: string };
 type Tab = "system" | "git" | "shortcuts";
 
 const TABS: { id: Tab; label: string; icon: typeof Keyboard }[] = [
@@ -45,20 +46,19 @@ function findConflicts(shortcuts: Shortcuts): Set<ShortcutId> {
   return new Set([...byBinding.values()].filter((ids) => ids.length > 1).flat());
 }
 
-export function SettingsDialog({ onboarding, settings, distros, info: initialInfo, onSaved, onClose }: Props) {
+export function SettingsDialog({ onboarding, settings, distros, info: initialInfo, onSaved, onClose, onOpenSetup }: Props) {
   const [info, setInfo] = useState(initialInfo);
   const [checkingWsl, setCheckingWsl] = useState(false);
   const allTools = useTools();
   const [detected, setDetected] = useState(false);
-  const [paths, setPaths] = useState<Record<string, string>>(settings.customToolPaths);
-  const [checks, setChecks] = useState<Record<string, PathCheck>>({});
+  const [error, setError] = useState<string | null>(null);
+  const toolPaths = useToolPaths(settings.customToolPaths, setError);
   const [defaultDistro, setDefaultDistro] = useState<string | null>(settings.defaultDistro);
   const [defaultIde, setDefaultIde] = useState<ToolId | null>((settings.defaultIde as ToolId | null) ?? null);
   const [shortcuts, setShortcuts] = useState<Shortcuts>(() => resolveShortcuts(settings.shortcuts));
   const [gitAuth, setGitAuth] = useState<GitAuth>(settings.gitAuth ?? "auto");
   const [tab, setTab] = useState<Tab>("system");
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   // Fresh detection every time the screen opens (an IDE may have been installed meanwhile).
   useEffect(() => {
@@ -73,23 +73,6 @@ export function SettingsDialog({ onboarding, settings, distros, info: initialInf
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  // Live validation of the custom paths (debounced).
-  useEffect(() => {
-    const timers = Object.entries(paths).map(([id, value]) => {
-      if (!value.trim()) {
-        setChecks((c) => ({ ...c, [id]: { state: "idle" } }));
-        return 0;
-      }
-      setChecks((c) => ({ ...c, [id]: { state: "checking" } }));
-      return window.setTimeout(() => {
-        checkToolPath(value)
-          .then((normalized) => setChecks((c) => ({ ...c, [id]: { state: "ok", message: normalized ?? undefined } })))
-          .catch((err) => setChecks((c) => ({ ...c, [id]: { state: "error", message: errorMessage(err) } })));
-      }, 300);
-    });
-    return () => timers.forEach((t) => window.clearTimeout(t));
-  }, [paths]);
-
   const recheckWsl = async () => {
     setCheckingWsl(true);
     try {
@@ -101,29 +84,14 @@ export function SettingsDialog({ onboarding, settings, distros, info: initialInf
     }
   };
 
-  const browse = async (tool: ToolInfo) => {
-    try {
-      const picked = await pickFile({
-        title: `Executável do ${tool.label}`,
-        multiple: false,
-        directory: false,
-        defaultPath: paths[tool.id] || tool.autoPath || undefined,
-        filters: [{ name: "Executável", extensions: ["exe", "cmd", "bat"] }],
-      });
-      if (typeof picked === "string") setPaths((p) => ({ ...p, [tool.id]: picked }));
-    } catch (err) {
-      setError(errorMessage(err));
-    }
-  };
-
   const conflicts = findConflicts(shortcuts);
-  const invalid = Object.values(checks).some((c) => c.state === "error" || c.state === "checking") || conflicts.size > 0;
+  const invalid = toolPaths.invalid || conflicts.size > 0;
 
   const save = async () => {
     setSaving(true);
     setError(null);
     try {
-      const customToolPaths = Object.fromEntries(Object.entries(paths).filter(([, v]) => v.trim()));
+      const customToolPaths = toolPaths.toSave();
       // Only what differs from the defaults, so future default changes still reach the user.
       const changedShortcuts = Object.fromEntries(
         SHORTCUT_DEFS.filter((d) => shortcuts[d.id] !== d.default).map((d) => [d.id, shortcuts[d.id]]),
@@ -259,54 +227,33 @@ export function SettingsDialog({ onboarding, settings, distros, info: initialInf
           </Section>
 
           <Section index="03" title="IDE padrão" hint="Botão em destaque no Explorador">
-            <div className="grid grid-cols-4 gap-2" role="radiogroup">
-              <IdeOption
-                selected={defaultIde === null}
-                onSelect={() => setDefaultIde(null)}
-                label="Automático"
-                detail={tools ? `hoje: ${allTools.find((t) => t.id === primaryIde(allTools, null))?.label ?? "—"}` : "…"}
-              />
-              {IDE_IDS.map((id) => {
-                const tool = allTools.find((t) => t.id === id);
-                return (
-                  <IdeOption
-                    key={id}
-                    selected={defaultIde === id}
-                    onSelect={() => setDefaultIde(id)}
-                    disabled={!!tools && !tool?.available}
-                    label={tool?.label ?? id}
-                    detail={!tools ? "…" : tool?.available ? "instalado" : "não encontrado"}
-                    icon={<ToolIcon tool={tool} id={id} className="size-4" />}
-                  />
-                );
-              })}
-            </div>
+            <IdeGrid tools={tools} allTools={allTools} value={defaultIde} onChange={setDefaultIde} />
           </Section>
 
           <Section index="04" title="Mapeamento de IDEs e ferramentas" hint="Caminho personalizado > detecção automática">
-            {!tools ? (
-              <div className="flex h-24 items-center justify-center">
-                <Loader2 className="size-4 animate-spin text-zinc-600" />
-              </div>
-            ) : (
-              <div className="space-y-2.5">
-                {tools
-                  .filter((t) => t.customizable)
-                  .map((t) => (
-                    <ToolRow
-                      key={t.id}
-                      tool={t}
-                      value={paths[t.id] ?? ""}
-                      check={checks[t.id] ?? { state: "idle" }}
-                      onChange={(v) => setPaths((p) => ({ ...p, [t.id]: v }))}
-                      onBrowse={() => browse(t)}
-                    />
-                  ))}
-              </div>
-            )}
+            <ToolPathList
+              tools={tools}
+              paths={toolPaths.paths}
+              checks={toolPaths.checks}
+              onChange={toolPaths.setPath}
+              onBrowse={toolPaths.browse}
+            />
           </Section>
 
           <UpdatesSection />
+
+          <Section index="06" title="Configuração inicial" hint="Setup Zero-to-Hero">
+            <div className="flex items-center gap-3 rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3">
+              <p className="flex-1 text-xs leading-relaxed text-zinc-500">
+                Refaz o diagnóstico da máquina e permite instalar ou reparar WSL, Ubuntu, Windows Terminal, zsh e Node.
+                Alterações não salvas aqui serão descartadas.
+              </p>
+              <button type="button" onClick={onOpenSetup} className={`${BTN_GHOST} shrink-0`}>
+                <Wand2 className="size-3.5" />
+                Abrir o setup
+              </button>
+            </div>
+          </Section>
           </>
           )}
         </div>
@@ -457,114 +404,5 @@ function DistroOption({
         {state ? `${state.stateLabel} · WSL ${state.version}` : detail}
       </span>
     </button>
-  );
-}
-
-function IdeOption({
-  selected,
-  onSelect,
-  label,
-  detail,
-  icon,
-  disabled,
-}: {
-  selected: boolean;
-  onSelect: () => void;
-  label: string;
-  detail: string;
-  icon?: ReactNode;
-  disabled?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      role="radio"
-      aria-checked={selected}
-      onClick={onSelect}
-      disabled={disabled}
-      className={`flex min-w-0 flex-col items-start gap-1.5 rounded-lg border px-3 py-2.5 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-35 ${
-        selected
-          ? "border-zinc-100 bg-zinc-100 text-void"
-          : "border-zinc-800 bg-zinc-900 text-zinc-200 hover:border-zinc-600"
-      }`}
-    >
-      <span className="flex h-4 items-center gap-2">
-        {icon ?? <span className={`size-1.5 rounded-full ${selected ? "bg-void" : "bg-zinc-500"}`} />}
-        <span className="truncate text-sm font-semibold">{label}</span>
-      </span>
-      <span className={`truncate text-[11px] ${selected ? "text-zinc-600" : "text-zinc-500"}`}>{detail}</span>
-    </button>
-  );
-}
-
-function ToolRow({
-  tool,
-  value,
-  check,
-  onChange,
-  onBrowse,
-}: {
-  tool: ToolInfo;
-  value: string;
-  check: PathCheck;
-  onChange: (value: string) => void;
-  onBrowse: () => void;
-}) {
-  const status =
-    tool.source === "custom"
-      ? { label: "Personalizado", dot: "bg-emerald-400" }
-      : tool.source === "auto"
-        ? { label: "Detectado", dot: "bg-emerald-400" }
-        : tool.source === "custom_missing"
-          ? { label: "Caminho salvo sumiu", dot: "bg-amber-400" }
-          : { label: "Não encontrado", dot: "bg-zinc-600" };
-
-  return (
-    <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-3.5">
-      <div className="flex items-center gap-2.5">
-        <ToolIcon tool={tool} id={tool.id} className="size-4 text-zinc-300" />
-        <span className="text-sm font-semibold text-zinc-100">{tool.label}</span>
-        <span className="ml-auto flex items-center gap-1.5 text-[11px] text-zinc-400">
-          <span className={`size-1.5 rounded-full ${status.dot}`} />
-          {status.label}
-        </span>
-      </div>
-
-      <div className="mt-2 flex items-baseline gap-2 text-[11px]">
-        <span className="w-24 shrink-0 tracking-wider text-zinc-600 uppercase">Auto</span>
-        {tool.autoPath ? (
-          <span className="truncate font-mono text-zinc-400" title={tool.autoPath}>
-            {tool.autoPath}
-          </span>
-        ) : (
-          <span className="text-zinc-500">Não encontrado no caminho padrão</span>
-        )}
-      </div>
-
-      <div className="mt-2 flex items-center gap-2">
-        <span className="w-24 shrink-0 text-[11px] tracking-wider text-zinc-600 uppercase">Personalizado</span>
-        <label className={`${FIELD} min-w-0 flex-1 ${check.state === "error" ? "border-rose-500/50" : ""}`}>
-          <input
-            value={value}
-            onChange={(e) => onChange(e.target.value)}
-            spellCheck={false}
-            placeholder={tool.id === "windows_terminal" ? "ex.: D:\\Apps\\Terminal\\wt.exe" : "ex.: D:\\Apps\\IDE\\bin\\ide.cmd"}
-            className={`${INPUT} font-mono`}
-          />
-          {check.state === "checking" && <Loader2 className="size-3.5 shrink-0 animate-spin text-zinc-500" />}
-          {check.state === "ok" && <Check className="size-3.5 shrink-0 text-emerald-400" />}
-          {value && (
-            <button type="button" onClick={() => onChange("")} aria-label="Limpar" className="shrink-0 text-zinc-600 hover:text-zinc-200">
-              <X className="size-3.5" />
-            </button>
-          )}
-        </label>
-        <button type="button" onClick={onBrowse} className={`${BTN_GHOST} shrink-0`}>
-          <FolderSearch className="size-3.5" />
-          Procurar…
-        </button>
-      </div>
-      {check.state === "error" && <p className="mt-1.5 pl-26 text-[11px] text-rose-300">{check.message}</p>}
-    </div>
   );
 }

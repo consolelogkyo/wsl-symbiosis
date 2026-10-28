@@ -111,6 +111,18 @@ export interface DropCachesResult {
 export type KillSignal = "TERM" | "KILL";
 
 export const listDistros = () => invoke<Distro[]>("list_distros");
+
+/** Internal VMs of desktop tools (Docker/Rancher Desktop, Podman): never a development distro.
+ *  Mirrors `is_system_distro` (provisioner.rs). */
+export function isSystemDistro(name: string): boolean {
+  return /^(docker-desktop|rancher-desktop|podman-machine)/i.test(name);
+}
+
+/** The distro to select when nothing is chosen: a real one (WSL's default if it is real). */
+export function preferredDistro(list: Distro[]): Distro | undefined {
+  const real = list.filter((d) => !isSystemDistro(d.name));
+  return real.find((d) => d.isDefault) ?? real[0] ?? list.find((d) => d.isDefault) ?? list[0];
+}
 export const getWslInfo = () => invoke<WslInfo>("get_wsl_info");
 export const startDistro = (name: string) => invoke<void>("start_distro", { name });
 export const shutdownWsl = () => invoke<void>("shutdown_wsl");

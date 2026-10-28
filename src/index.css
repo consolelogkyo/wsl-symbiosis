@@ -68,4 +68,76 @@
   .meter-cells {
     mask-image: repeating-linear-gradient(90deg, #000 0 3px, transparent 3px 4px);
   }
+
+  /* First-run intro (SetupIntro.tsx): the mark assembles itself, then the wordmark settles. */
+  .intro-chevron {
+    stroke-dasharray: 1;
+    stroke-dashoffset: 1;
+    opacity: 0;
+    animation: intro-draw 1500ms cubic-bezier(0.65, 0, 0.35, 1) 300ms forwards;
+  }
+  .intro-drip {
+    transform-box: fill-box;
+    transform-origin: top;
+    opacity: 0;
+    animation: intro-drip 900ms cubic-bezier(0.34, 1.3, 0.64, 1) forwards;
+  }
+  .intro-cursor {
+    transform-box: fill-box;
+    transform-origin: left;
+    transform: scaleX(0);
+    animation:
+      intro-cursor 700ms cubic-bezier(0.22, 1, 0.36, 1) 2100ms forwards,
+      intro-blink 1000ms steps(1) 2900ms 3;
+  }
+  .intro-wordmark {
+    opacity: 0;
+    letter-spacing: 0.9em;
+    animation: intro-wordmark 1800ms cubic-bezier(0.22, 1, 0.36, 1) 2700ms forwards;
+  }
+  .intro-rule {
+    transform: scaleX(0);
+    animation: intro-rule 1200ms cubic-bezier(0.22, 1, 0.36, 1) 3700ms forwards;
+  }
+  .intro-fade-late {
+    opacity: 0;
+    animation: intro-fade 1000ms ease-out 4300ms forwards;
+  }
+  .intro-exit {
+    animation: intro-exit 650ms cubic-bezier(0.4, 0, 1, 1) forwards;
+  }
+  .setup-enter {
+    animation: setup-enter 600ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+}
+
+@keyframes intro-draw {
+  0% { opacity: 1; stroke-dashoffset: 1; }
+  100% { opacity: 1; stroke-dashoffset: 0; }
+}
+@keyframes intro-drip {
+  0% { opacity: 0; transform: translateY(-35%) scaleY(0.4); }
+  100% { opacity: 1; transform: translateY(0) scaleY(1); }
+}
+@keyframes intro-cursor {
+  to { transform: scaleX(1); }
+}
+@keyframes intro-blink {
+  50% { opacity: 0; }
+}
+@keyframes intro-wordmark {
+  to { opacity: 1; letter-spacing: 0.32em; }
+}
+@keyframes intro-rule {
+  to { transform: scaleX(1); }
+}
+@keyframes intro-fade {
+  to { opacity: 1; }
+}
+@keyframes intro-exit {
+  to { opacity: 0; transform: scale(1.03); }
+}
+@keyframes setup-enter {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
 }

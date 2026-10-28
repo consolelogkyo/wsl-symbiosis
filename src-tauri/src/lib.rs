@@ -3,6 +3,7 @@ mod git;
 mod metrics;
 mod packages;
 mod projects;
+mod provisioner;
 mod settings;
 // Public so examples/pty_no_window.rs can exercise the real session code.
 pub mod terminal;
@@ -30,6 +31,7 @@ pub fn run() {
         .manage(terminal::TerminalManager::default())
         .manage(explorer::ToolIconCache::default())
         .manage(projects::ProjectRunner::default())
+        .manage(provisioner::ProvisionLock::default())
         .invoke_handler(tauri::generate_handler![
             wsl::list_distros,
             wsl::get_wsl_info,
@@ -74,6 +76,12 @@ pub fn run() {
             projects::dismiss_project_task,
             projects::stop_process_tree,
             updater::prepare_for_update,
+            provisioner::inspect_setup_state,
+            provisioner::enable_wsl_engine,
+            provisioner::install_ubuntu_distro,
+            provisioner::list_online_distros,
+            provisioner::should_open_setup,
+            provisioner::run_provisioning_tasks,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

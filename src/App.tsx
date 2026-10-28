@@ -18,9 +18,15 @@ import { SettingsSnapshot, getSettings } from "./lib/settings";
 import { BANNER_ERROR } from "./lib/ui";
 import type { ToolId } from "./lib/explorer";
 import { NAV_ITEMS, type ViewId } from "./views";
+import { SetupWizardView } from "./views/SetupWizardView";
+import { shouldOpenSetup } from "./lib/setup";
 import { DashboardView } from "./views/DashboardView";
 import { ExplorerView } from "./views/ExplorerView";
 import { PackagesView } from "./views/PackagesView";
+
+/** Visual QA of the first-run setup on a machine already set up: `VITE_FORCE_SETUP=1 npm run tauri dev`
+ *  opens it on start-up as if it were the first access. Never active in production builds. */
+const FORCE_SETUP = import.meta.env.DEV && import.meta.env.VITE_FORCE_SETUP === "1";
 
 // xterm is heavy; load it only when the Terminal screen is opened.
 const TerminalView = lazy(() => import("./views/TerminalView").then((m) => ({ default: m.TerminalView })));
@@ -36,13 +42,17 @@ export default function App() {
   const [explorerMounted, setExplorerMounted] = useState(false);
   const [settings, setSettings] = useState<SettingsSnapshot | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // First-run setup: takes over the whole window (no sidebar, no modules) until finished/skipped.
+  const [setupMode, setSetupMode] = useState(false);
 
-  // First run: the diagnostic opens by itself until it is completed once.
+  // The setup opens by itself on first run, after updating from 0.1.2, after the WSL restart,
+  // or when there is no development distro (provisioner::setup_required).
   useEffect(() => {
     getSettings()
-      .then((s) => {
+      .then(async (s) => {
+        const open = FORCE_SETUP || (await shouldOpenSetup().catch(() => !s.onboardingCompleted));
+        if (open) setSetupMode(true);
         setSettings(s);
-        if (!s.onboardingCompleted) setSettingsOpen(true);
       })
       .catch(() =>
         setSettings({
@@ -74,6 +84,28 @@ export default function App() {
     if (next === "explorer") setExplorerMounted(true);
     setView(next);
   };
+
+  // Until the startup decision is in (settings + should_open_setup, a few ms), draw only the
+  // frame: no flash of the app before the setup takes over.
+  if (!settings) return <div className="h-full bg-void" />;
+
+  if (setupMode) {
+    return (
+      <SetupWizardView
+        // Intro + "Primeiro acesso" also for whoever sees the setup for the first time (from 0.1.2).
+        firstRun={FORCE_SETUP || !settings.onboardingCompleted || !settings.setupWizardSeen}
+        settings={settings}
+        initialDistro={wsl.selected?.name ?? null}
+        onDistrosChanged={wsl.refresh}
+        onFinish={(saved) => {
+          setSettings(saved);
+          setSetupMode(false);
+          wsl.refresh();
+          navigate("dashboard");
+        }}
+      />
+    );
+  }
 
   return (
     <ActivityContext.Provider value={activity}>
@@ -170,6 +202,10 @@ export default function App() {
             }
           }}
           onClose={() => setSettingsOpen(false)}
+          onOpenSetup={() => {
+            setSettingsOpen(false);
+            setSetupMode(true);
+          }}
         />
       )}
 

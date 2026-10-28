@@ -28,6 +28,12 @@ pub struct Settings {
     pub shortcuts: HashMap<String, String>,
     /// How git pull/fetch reach HTTPS remotes (there is no terminal to type a password).
     pub git_auth: GitAuth,
+    /// Setup enabled the WSL Windows features and Windows still has to restart. Owned by the
+    /// backend (provisioner.rs): `save_settings` keeps the stored value.
+    pub wsl_reboot_pending: bool,
+    /// The full-window setup (0.1.3) was finished or skipped once. False for anyone updating from
+    /// 0.1.2, so they see it once. Once true it stays true (`save_settings` never clears it).
+    pub setup_wizard_seen: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,6 +84,15 @@ impl SettingsStore {
 
     pub fn git_auth(&self) -> GitAuth {
         self.data.lock().unwrap().git_auth
+    }
+
+    pub fn set_wsl_reboot_pending(&self, pending: bool) -> Result<(), String> {
+        let mut next = self.get();
+        if next.wsl_reboot_pending == pending {
+            return Ok(());
+        }
+        next.wsl_reboot_pending = pending;
+        self.save(next).map(|_| ())
     }
 
     pub fn path(&self) -> Option<&Path> {
@@ -223,7 +238,11 @@ pub fn get_settings(store: State<'_, SettingsStore>) -> SettingsSnapshot {
 }
 
 #[tauri::command]
-pub fn save_settings(store: State<'_, SettingsStore>, settings: Settings) -> Result<SettingsSnapshot, String> {
+pub fn save_settings(store: State<'_, SettingsStore>, mut settings: Settings) -> Result<SettingsSnapshot, String> {
+    let current = store.get();
+    settings.wsl_reboot_pending = current.wsl_reboot_pending;
+    // The Settings dialog doesn't send it: never let a save reopen the setup.
+    settings.setup_wizard_seen |= current.setup_wizard_seen;
     let saved = store.save(settings)?;
     Ok(snapshot(&store, saved))
 }

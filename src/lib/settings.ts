@@ -14,6 +14,10 @@ export interface Settings {
   /** How git pull/fetch reach HTTPS remotes: retry over SSH when asked for a password (auto),
    *  always SSH, or the repository's remote as is. */
   gitAuth: GitAuth;
+  /** Setup enabled WSL and Windows must restart (owned by the backend; saving keeps it). */
+  wslRebootPending?: boolean;
+  /** The full-window setup was finished or skipped once (false after updating from 0.1.2). */
+  setupWizardSeen?: boolean;
 }
 
 export type GitAuth = "auto" | "ssh" | "remote";

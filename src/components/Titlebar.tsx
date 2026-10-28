@@ -113,7 +113,8 @@ function UpdatePill() {
   );
 }
 
-function WindowControls() {
+/** Minimize / maximize / close (also used by the full-screen first-run setup). */
+export function WindowControls() {
   const [maximized, setMaximized] = useState(false);
 
   useEffect(() => {

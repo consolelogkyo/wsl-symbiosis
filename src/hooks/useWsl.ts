@@ -5,6 +5,7 @@ import {
   errorMessage,
   getWslInfo,
   listDistros,
+  preferredDistro,
   shutdownWsl,
   startDistro,
 } from "../lib/wsl";
@@ -39,11 +40,10 @@ export function useWsl(preferred?: string | null) {
     try {
       const list = await listDistros();
       setDistros(list);
-      // Keep the current selection if it still exists, otherwise fall back to the default distro.
+      // Keep the current selection if it still exists, otherwise fall back to a real distro
+      // (Docker Desktop often makes docker-desktop WSL's default).
       setSelectedName((current) =>
-        current && list.some((d) => d.name === current)
-          ? current
-          : (list.find((d) => d.isDefault) ?? list[0])?.name ?? null,
+        current && list.some((d) => d.name === current) ? current : preferredDistro(list)?.name ?? null,
       );
       setError(null);
     } catch (err) {

@@ -54,8 +54,11 @@ src/                      # frontend React
   lib/updater.ts          # check/download/install do plugin updater, mensagens de erro em pt-BR
   hooks/useUpdater.ts     # estado do auto-update (UpdaterContext no App): checagem silenciosa, progresso
   components/UpdateDialog.tsx  # novidades + Baixar e instalar (pill na Titlebar, card nas Configurações)
+  lib/setup.ts            # tipos/invoke do provisioner.rs, MODULE_DEFS, assessModule (estado de cada módulo)
+  views/SetupWizardView.tsx    # setup Zero-to-Hero que toma a janela inteira (5 etapas, progresso ao vivo)
+  components/ToolSettings.tsx  # IdeGrid + ToolPathList (Configurações e setup); hooks/useToolPaths.ts
   components/             # Titlebar (janela sem bordas), Sidebar (+ AO VIVO), Logo, DistroSelect,
-                          # StatusDot, SettingsDialog (abas Sistema & IDEs / Atalhos; 1º uso),
+                          # StatusDot, SettingsDialog (abas Sistema & IDEs / Git / Atalhos; o 1º uso agora é o setup),
                           # ShortcutsSettings (gravador de atalhos, gestos de mouse, fixos),
                           # InfoTip (tooltip "i"), BrandIcon (logo oficial embutido),
                           # RunningPanel (sidebar EM EXECUÇÃO), Toaster, TaskLogDrawer,
@@ -79,6 +82,7 @@ src-tauri/src/
   projects.rs             # rodar/parar projetos Node e instalar node_modules (ProjectRunner, evento project-task)
   git.rs                  # branches, git switch, fetch e pull --ff-only (mensagens de erro em pt-BR)
   updater.rs              # prepare_for_update: fecha terminais e para projetos antes do instalador
+  provisioner.rs          # setup: inspeção, habilitar WSL, instalar Ubuntu, módulos (evento provision-progress)
 scripts/build-release.mjs # npm run release:build → instalador assinado + latest.json em dist-release/
 src-tauri/icons/
   app-icon.svg            # fonte do ícone; regenerar com `npx tauri icon src-tauri/icons/app-icon.svg`
@@ -261,6 +265,42 @@ O usuário tem `Ubuntu` (procps) e `docker-desktop` (busybox). Scripts dentro da
 - A checagem automática é silenciosa (offline / sem release = nada na tela); erro só aparece em
   ação do usuário. No Windows o `install()` sai do app com `process::exit` (pula `RunEvent::Exit`),
   por isso o frontend chama `prepare_for_update` antes.
+
+### 3.7.3 Setup Zero-to-Hero (provisioner.rs, SetupWizardView)
+- 1º uso (`!onboardingCompleted`) ou `wslRebootPending` → `App` entra em `setupMode`: o setup **toma a
+  janela inteira** (barra própria com WindowControls; sem Titlebar, Sidebar nem módulos), como o
+  onboarding de outras IDEs. 1ª etapa = Diagnóstico (só leitura). Reabrir: Configurações → 06.
+- **Quando abre:** `should_open_setup` → `setup_required` (testada): `!onboardingCompleted` ou
+  `!setupWizardSeen` (quem vem da 0.1.2 vê uma vez) ou `wslRebootPending` ou nenhuma distro de
+  desenvolvimento. `save_settings` nunca limpa `setupWizardSeen`.
+- **Distros de sistema** (`is_system_distro` / `isSystemDistro`: docker-desktop*, rancher-desktop*,
+  podman-machine*) nunca são alvo do setup nem dos módulos, e o `useWsl` (`preferredDistro`) não as
+  escolhe como padrão.
+- `inspect_setup_state` **nunca liga a distro**: parada → `linux: null` e a UI oferece "Ligar e analisar".
+  Os módulos (ação do usuário) podem ligar.
+- Edições de config são funções puras testadas (`set_zsh_theme`, `ensure_plugins`,
+  `ensure_completions_fpath`, `ensure_omz_loaded`, `set_wsl_conf_default_user`, `apply_dracula`),
+  nunca sed. Backup `<arquivo>.symbiosis.bak` só na 1ª edição (guarda o original).
+- `zsh-completions` vai no `fpath` antes do `source $ZSH/oh-my-zsh.sh`, **não** em `plugins=()`
+  (README do projeto: como plugin quebra o cache do compinit). `zsh-syntax-highlighting` sempre por último.
+- Windows Terminal: `settings.json` é JSONC (comentários/vírgulas finais → `strip_jsonc`); só é
+  regravado se algo mudou (comentários se perdem nessa regravação; há backup). Há dois perfis
+  "Ubuntu" (pacote da Store visível + WSL oculto): `find_distro_profile` prefere o visível.
+  `serde_json` com `preserve_order` mantém a ordem das chaves do usuário.
+- Senha do Linux: só por stdin para `chpasswd`; nunca em argumento, log ou settings.
+- `enable_wsl_engine`: script .ps1 temporário elevado (`Start-Process -Verb RunAs`), códigos do DISM
+  num arquivo (3010 = reiniciar) → `settings.wslRebootPending` (o `save_settings` preserva esse campo).
+- Scripts Linux usam PATH só Linux (`LINUX_PATH`), senão o `git.exe` do Windows apareceria.
+- Teste real só-leitura: `WSL_TEST_DISTRO=Ubuntu cargo test --lib live_setup -- --ignored`
+  (o patch do .zshrc roda num HOME descartável em /tmp).
+- E2E numa distro **descartável** (recusa se já existir; remove só a que criou):
+  `WSL_E2E_DISTRO=SymbiosisE2E WSL_E2E_ROOTFS=<ubuntu-noble-wsl-amd64-wsl.rootfs.tar.gz>
+  cargo test --lib live_setup_e2e -- --ignored --nocapture` (rootfs oficial de
+  cloud-images.ubuntu.com/wsl; confira o SHA256).
+- Lições do E2E: o catálogo de `wsl --install` muda com a versão do WSL (`list_online_distros`, nada
+  de nomes fixos); o instalador só oferece Ubuntu (o Debian do catálogo pode ser EOL com mirrors 404);
+  `apt-get update` com um repositório morto não pode abortar; cada módulo garante seu git/curl
+  (`ensure_packages`); pacotes antigos da Store só registram a distro com `<distro>.exe install --root`.
 
 ### 3.8 Memória do WSL no Windows
 - Uma única chamada `NtQuerySystemInformation` por amostra, **sem cache de PID**, porque a VM nasce
