@@ -1,0 +1,71 @@
+@import "tailwindcss";
+
+/*
+ * Venom palette. The zinc scale is re-tuned to the symbiote neutrals so every surface,
+ * border and text shade comes from one scale:
+ *   950 #09090c content · 900 #0d0d11 cards · 800 #1a1a20 borders · 500 #6e6e7a labels · 100 #f4f4f6 text
+ * `void` (#050507) is the outer frame: titlebar and sidebar.
+ */
+@theme {
+  --font-sans: "Inter", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Code", "Consolas", ui-monospace, monospace;
+
+  --color-void: #050507;
+  --color-zinc-50: #fafafb;
+  --color-zinc-100: #f4f4f6;
+  --color-zinc-200: #dcdce2;
+  --color-zinc-300: #babac4;
+  --color-zinc-400: #92929e;
+  --color-zinc-500: #6e6e7a;
+  --color-zinc-600: #4a4a55;
+  --color-zinc-700: #2a2a32;
+  --color-zinc-800: #1a1a20;
+  --color-zinc-900: #0d0d11;
+  --color-zinc-950: #09090c;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-void text-zinc-100 antialiased select-none;
+    font-feature-settings: "cv11", "ss01";
+  }
+
+  ::selection {
+    @apply bg-zinc-100/25;
+  }
+
+  :focus-visible {
+    @apply outline-1 outline-offset-1 outline-zinc-300;
+  }
+
+  /* Discreet scrollbars */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply rounded-full border-2 border-solid border-transparent bg-zinc-800 bg-clip-padding;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-zinc-700;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+}
+
+@layer components {
+  /* Hardware-monitor meter: thin fill cut into 3px cells. */
+  .meter-cells {
+    mask-image: repeating-linear-gradient(90deg, #000 0 3px, transparent 3px 4px);
+  }
+}

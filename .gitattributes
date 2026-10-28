@@ -1,0 +1,5 @@
+# LF in the repository; binaries untouched.
+* text=auto eol=lf
+*.ico binary
+*.icns binary
+*.png binary
