@@ -1,10 +1,13 @@
+mod backup;
 mod explorer;
 mod git;
+mod lines;
 mod metrics;
 mod packages;
 mod projects;
 mod provisioner;
 mod settings;
+mod ssh;
 // Public so examples/pty_no_window.rs can exercise the real session code.
 pub mod terminal;
 mod tray;
@@ -62,6 +65,7 @@ pub fn run() {
             explorer::delete_entry,
             explorer::read_text_file,
             explorer::write_text_file,
+            explorer::create_env_from_example,
             explorer::open_in_tool,
             explorer::detect_tools,
             explorer::get_tool_icons,
@@ -103,6 +107,15 @@ pub fn run() {
             wslconfig::get_wsl_config,
             wslconfig::save_wsl_config,
             vhdx::compact_distro_vhdx,
+            ssh::get_git_identity_and_ssh,
+            ssh::save_git_identity,
+            ssh::generate_ssh_key,
+            ssh::import_windows_ssh_keys,
+            ssh::fix_ssh_permissions,
+            ssh::test_ssh_github,
+            backup::export_distro_backup,
+            backup::import_distro_backup,
+            backup::get_backup_defaults,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

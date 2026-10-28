@@ -293,8 +293,8 @@ export function WslConfigDialog({ onClose, onSaved }: Props) {
                       </>
                     }
                     {...boolSetting(draft.sparseVhd, false, (v) => set("sparseVhd", v), {
-                      on: "Distros instaladas a partir de agora devolvem espaço ao Windows sozinhas quando você apaga arquivos no Linux. As que você já tem continuam como estão (para elas, use o Compactar VHDX do Dashboard).",
-                      off: "O disco virtual só cresce. Para recuperar o espaço de arquivos apagados, use o Compactar VHDX do Dashboard de vez em quando.",
+                      on: "Distros instaladas a partir de agora devolvem espaço ao Windows sozinhas quando você apaga arquivos no Linux. As que você já tem continuam como estão (para elas, use o botão Compactar no card Disco do Linux, no Dashboard).",
+                      off: "O disco virtual só cresce. Para recuperar o espaço de arquivos apagados, use o botão Compactar no card Disco do Linux, no Dashboard, de vez em quando.",
                     })}
                   />
                   <Setting

@@ -17,10 +17,11 @@ use std::time::Duration;
 use serde::Serialize;
 use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter, Manager};
-use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
+use tokio::io::{AsyncRead, BufReader};
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
+use crate::lines::{BoundedLines, MAX_LOG_LINE_BYTES};
 use crate::packages::strip_ansi;
 use crate::settings::SettingsStore;
 use crate::wsl::{self, Distro, DistroState, hidden_command, run, run_raw, sh_in_distro, validate_distro_name, wsl_command};
@@ -765,21 +766,18 @@ impl Reporter<'_> {
     }
 }
 
-async fn pump(reader: impl AsyncRead + Unpin, tx: tokio::sync::mpsc::UnboundedSender<String>) {
-    let mut reader = BufReader::new(reader);
-    let mut buf = Vec::new();
-    loop {
-        buf.clear();
-        match reader.read_until(b'\n', &mut buf).await {
-            Ok(0) | Err(_) => break,
-            Ok(_) => {
-                let text = String::from_utf8_lossy(&buf).replace('\0', "");
-                // Progress bars redraw with \r: keep the last state of the line.
-                let text = strip_ansi(text.trim_end().rsplit('\r').next().unwrap_or(""));
-                if !text.trim().is_empty() {
-                    let _ = tx.send(text.trim_end().to_string());
-                }
-            }
+/// Lines waiting to become log events. Bounded: a step flooding its output slows down (the pipe
+/// fills up) instead of growing the app's memory.
+const LOG_CHANNEL_CAPACITY: usize = 256;
+
+async fn pump(reader: impl AsyncRead + Unpin, tx: tokio::sync::mpsc::Sender<String>) {
+    let mut lines = BoundedLines::new(BufReader::new(reader), MAX_LOG_LINE_BYTES);
+    while let Ok(Some(raw)) = lines.next_line().await {
+        let text = raw.replace('\0', "");
+        // Progress bars redraw with \r: keep the last state of the line.
+        let text = strip_ansi(text.trim_end().rsplit('\r').next().unwrap_or(""));
+        if !text.trim().is_empty() && tx.send(text.trim_end().to_string()).await.is_err() {
+            break;
         }
     }
 }
@@ -795,7 +793,7 @@ async fn stream(rep: &Reporter<'_>, mut cmd: Command, timeout: Duration, stdin: 
         use tokio::io::AsyncWriteExt;
         let _ = pipe.write_all(&data).await;
     }
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(LOG_CHANNEL_CAPACITY);
     let out = child.stdout.take().map(|r| tokio::spawn(pump(r, tx.clone())));
     let err = child.stderr.take().map(|r| tokio::spawn(pump(r, tx.clone())));
     drop(tx);
@@ -1072,56 +1070,35 @@ pub struct WslEnableResult {
     pub message: String,
 }
 
-/// Runs elevated (one UAC prompt). Writes the exit codes to `$out`: DISM 3010 = restart needed.
-const ENABLE_WSL_PS1: &str = r#"param($out)
-$codes = @()
-& dism.exe /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart | Out-Null
-$codes += $LASTEXITCODE
-& dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart | Out-Null
-$codes += $LASTEXITCODE
-& wsl.exe --install --no-distribution | Out-Null
-$codes += $LASTEXITCODE
-& wsl.exe --set-default-version 2 | Out-Null
-$codes += $LASTEXITCODE
-($codes -join ' ') | Set-Content -Path $out -Encoding ascii
+/// Runs elevated (one UAC prompt), in memory (`wsl::run_elevated_powershell`). System tools by
+/// absolute path. Reports through the exit code: 0 = enabled, 3010 = enabled, restart needed,
+/// anything else = the DISM error.
+pub const ENABLE_WSL_PS1: &str = r#"$dism = "$env:SystemRoot\System32\dism.exe"
+$wsl = "$env:SystemRoot\System32\wsl.exe"
+& $dism /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart | Out-Null
+$c1 = $LASTEXITCODE
+& $dism /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart | Out-Null
+$c2 = $LASTEXITCODE
+& $wsl --install --no-distribution | Out-Null
+& $wsl --set-default-version 2 | Out-Null
+foreach ($c in @($c1, $c2)) { if ($c -ne 0 -and $c -ne 3010) { exit $c } }
+if ($c1 -eq 3010 -or $c2 -eq 3010) { exit 3010 }
+exit 0
 "#;
 
+/// What the elevated script's exit code means: `Ok(needs_reboot)` or the error for the user.
+pub fn interpret_enable_wsl_exit(code: i32) -> Result<bool, String> {
+    match code {
+        0 => Ok(false),
+        3010 => Ok(true),
+        wsl::UAC_CANCELLED => Err("A permissão de administrador foi negada (ou a janela do UAC foi fechada). Nada foi alterado.".into()),
+        c => Err(format!("O DISM não conseguiu habilitar os recursos do Windows (código {c}).")),
+    }
+}
+
 pub(crate) async fn enable_wsl(app: &AppHandle) -> Result<WslEnableResult, String> {
-    let dir = std::env::temp_dir().join(format!("wsl-symbiosis-setup-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let ps1 = dir.join("enable-wsl.ps1");
-    let out = dir.join("enable-wsl.txt");
-    let _ = std::fs::remove_file(&out);
-    std::fs::write(&ps1, ENABLE_WSL_PS1).map_err(|e| e.to_string())?;
-
-    // Windows paths can't contain `"`; `'` is doubled for the PowerShell single-quoted string.
-    let inner = format!("-NoProfile -ExecutionPolicy Bypass -File \"{}\" \"{}\"", ps1.display(), out.display());
-    let command = format!(
-        "Start-Process powershell.exe -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '{}'",
-        inner.replace('\'', "''")
-    );
-    let mut cmd = hidden_command("powershell.exe");
-    cmd.args(["-NoProfile", "-NonInteractive", "-Command", &command]);
-    let output = tokio::time::timeout(LONG_TIMEOUT, cmd.output())
-        .await
-        .map_err(|_| "Tempo esgotado habilitando o WSL".to_string())?
-        .map_err(|e| format!("Falha ao executar o PowerShell: {e}"))?;
-    let codes = std::fs::read_to_string(&out).unwrap_or_default();
-    let _ = std::fs::remove_dir_all(&dir);
-    if !output.status.success() || codes.trim().is_empty() {
-        let err = wsl::decode_output(&output.stderr);
-        if err.contains("cancel") || codes.trim().is_empty() {
-            return Err("A permissão de administrador foi negada (ou a janela do UAC foi fechada). Nada foi alterado.".into());
-        }
-        return Err(err.trim().to_string());
-    }
-
-    let codes: Vec<i64> = codes.split_whitespace().filter_map(|c| c.parse().ok()).collect();
-    let dism_failed = codes.iter().take(2).any(|&c| c != 0 && c != 3010);
-    if dism_failed {
-        return Err(format!("O DISM não conseguiu habilitar os recursos do Windows (códigos {codes:?})."));
-    }
-    let needs_reboot = codes.iter().take(2).any(|&c| c == 3010) || windows_reboot_pending().await;
+    let code = wsl::run_elevated_powershell(ENABLE_WSL_PS1, LONG_TIMEOUT).await?;
+    let needs_reboot = interpret_enable_wsl_exit(code)? || windows_reboot_pending().await;
     if needs_reboot {
         app.state::<SettingsStore>().set_wsl_reboot_pending(true)?;
     }
@@ -1315,6 +1292,19 @@ pub async fn run_provisioning_tasks(app: AppHandle, distro: String, modules: Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn enable_wsl_runs_in_memory() {
+        // Security audit (0.1.3): no script or result file in %TEMP% during the UAC prompt.
+        for forbidden in ["param(", "$out", "Set-Content", ".ps1", ".txt", "TEMP"] {
+            assert!(!ENABLE_WSL_PS1.contains(forbidden), "{forbidden}");
+        }
+        assert!(ENABLE_WSL_PS1.contains(r"$env:SystemRoot\System32\dism.exe"), "DISM by absolute path");
+        assert_eq!(interpret_enable_wsl_exit(0), Ok(false));
+        assert_eq!(interpret_enable_wsl_exit(3010), Ok(true), "enabled, restart needed");
+        assert!(interpret_enable_wsl_exit(wsl::UAC_CANCELLED).unwrap_err().contains("Nada foi alterado"));
+        assert!(interpret_enable_wsl_exit(87).unwrap_err().contains("código 87"));
+    }
 
     const WT_SETTINGS: &str = r##"// This file was initially generated by Windows Terminal
 {

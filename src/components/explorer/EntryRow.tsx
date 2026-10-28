@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, File, Folder, FolderGit2, Link2, Loader2, Pencil, Trash2, X } from "lucide-react";
+import { Check, File, Folder, FolderGit2, Link2, Loader2, Pencil, Plus, Trash2, X } from "lucide-react";
 import { GitBranchChip } from "./GitBranchChip";
-import { DirEntry, ToolId, ToolInfo, isNavigable, isProtectedPath, joinPath } from "../../lib/explorer";
+import { DirEntry, ToolId, ToolInfo, canCreateEnv, isNavigable, isProtectedPath, joinPath } from "../../lib/explorer";
 import { formatBytes } from "../../lib/format";
 import { ProjectBadges, mainStack } from "./ProjectBadges";
 import { OpenInButtons } from "./OpenInButtons";
@@ -24,6 +24,8 @@ interface Props {
   onTerminalHere: (path: string) => void;
   /** Something changed on disk (branch switched): reload the listing. */
   onChanged: () => void;
+  /** "+ Criar .env": copies the project's .env.example and opens the new file in the editor. */
+  onCreateEnv?: (entry: DirEntry) => Promise<void>;
   /** Batch git pull selection mode: a checkbox per repository; clicks toggle it. */
   selection?: { selectable: boolean; selected: boolean; onToggle: () => void };
 }
@@ -46,11 +48,13 @@ export function EntryRow({
   onOpen,
   onTerminalHere,
   onChanged,
+  onCreateEnv,
   selection,
 }: Props) {
   const [renaming, setRenaming] = useState(false);
   const [confirm, setConfirm] = useState<Confirm>(null);
   const [busy, setBusy] = useState(false);
+  const [creatingEnv, setCreatingEnv] = useState(false);
 
   const navigable = isNavigable(entry);
   const stack = navigable ? mainStack(entry.projectMarkers) : null;
@@ -114,6 +118,23 @@ export function EntryRow({
         )}
         {/* The branch replaces the "GIT" badge and stays visible on narrow rows. */}
         {navigable && entry.gitBranch && <GitBranchChip distro={distro} entry={entry} onChanged={onChanged} />}
+        {navigable && onCreateEnv && canCreateEnv(entry.projectMarkers) && (
+          <button
+            type="button"
+            disabled={creatingEnv}
+            onClick={async (e) => {
+              e.stopPropagation();
+              setCreatingEnv(true);
+              await onCreateEnv(entry);
+              setCreatingEnv(false);
+            }}
+            title="Cria o arquivo .env a partir do modelo de exemplo do projeto e abre para você preencher"
+            className="flex shrink-0 items-center gap-1 rounded-full border border-dashed border-zinc-600 px-2 py-0.5 font-mono text-[10px] text-zinc-300 transition-colors hover:border-zinc-300 hover:bg-zinc-800 hover:text-zinc-100 disabled:opacity-50"
+          >
+            {creatingEnv ? <Loader2 className="size-3 animate-spin" /> : <Plus className="size-3" />}
+            Criar .env
+          </button>
+        )}
         <span className="flex shrink-0 items-center gap-2 @max-5xl:hidden">
           <ProjectBadges markers={entry.gitBranch ? entry.projectMarkers.filter((m) => m !== ".git") : entry.projectMarkers} />
         </span>

@@ -73,6 +73,12 @@ export const readTextFile = (distro: string, path: string, maxBytes?: number) =>
   invoke<TextFileContent>("read_text_file", { distro, path, maxBytes });
 export const writeTextFile = (distro: string, path: string, content: string) =>
   invoke<void>("write_text_file", { distro, path, content });
+/** Copies .env.example/.template/.sample to .env (never overwrites); returns the new file's path. */
+export const createEnvFromExample = (distro: string, projectPath: string) =>
+  invoke<string>("create_env_from_example", { distro, projectPath });
+/** The row offers "+ Criar .env": a template exists and .env doesn't. */
+export const canCreateEnv = (markers: string[]) =>
+  !markers.includes(".env") && [".env.example", ".env.template", ".env.sample"].some((t) => markers.includes(t));
 export const openInTool = (distro: string, linuxPath: string, tool: ToolId) =>
   invoke<void>("open_in_tool", { distro, linuxPath, tool });
 export const detectTools = () => invoke<ToolInfo[]>("detect_tools");

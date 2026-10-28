@@ -180,7 +180,7 @@ export function SettingsDialog({ onboarding, settings, distros, info: initialInf
 
         <div className="min-h-0 flex-1 space-y-6 overflow-y-auto px-6 py-5">
           {tab === "git" ? (
-            <GitSettings gitAuth={gitAuth} onChange={setGitAuth} />
+            <GitSettings gitAuth={gitAuth} onChange={setGitAuth} distros={distros} defaultDistro={defaultDistro} />
           ) : tab === "shortcuts" ? (
             <ShortcutsSettings
               shortcuts={shortcuts}

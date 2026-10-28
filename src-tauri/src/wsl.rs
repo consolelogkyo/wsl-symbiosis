@@ -67,6 +67,62 @@ pub(crate) fn hidden_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     cmd
 }
 
+/// `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`: always the system's own, never
+/// a `powershell.exe` that happens to come first in PATH (or in the current directory).
+pub(crate) fn powershell_path() -> std::path::PathBuf {
+    let root = std::env::var_os("SystemRoot").map(std::path::PathBuf::from).unwrap_or_else(|| r"C:\Windows".into());
+    root.join(r"System32\WindowsPowerShell\v1.0\powershell.exe")
+}
+
+/// `-EncodedCommand` payload: Base64 of the script in UTF-16LE.
+pub fn encode_powershell(script: &str) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = (chunk[0] as u32) << 16 | (*chunk.get(1).unwrap_or(&0) as u32) << 8 | *chunk.get(2).unwrap_or(&0) as u32;
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(TABLE[(n >> (18 - 6 * i) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+/// Exit code [`run_elevated_powershell`] reports when the UAC prompt was refused or closed
+/// (`ERROR_CANCELLED`).
+pub const UAC_CANCELLED: i32 = 1223;
+
+/// The non-elevated launcher: starts the elevated PowerShell with `inner` as `-EncodedCommand`
+/// and exits with its exit code. Everything lives in the command line, in memory: no script or
+/// result file in %TEMP% that another process could swap while the UAC prompt waits (TOCTOU).
+pub fn elevation_launcher(inner: &str) -> String {
+    let ps = powershell_path().display().to_string().replace('\'', "''");
+    format!(
+        "try {{ $p = Start-Process -FilePath '{ps}' -ArgumentList '-NoProfile','-NonInteractive','-EncodedCommand','{}' \
+         -Verb RunAs -WindowStyle Hidden -PassThru -ErrorAction Stop; $null = $p.Handle; $p.WaitForExit(); exit $p.ExitCode }} \
+         catch {{ exit {UAC_CANCELLED} }}",
+        encode_powershell(inner)
+    )
+}
+
+/// Runs `inner` elevated (one UAC prompt) and returns its exit code; [`UAC_CANCELLED`] when the
+/// user said no. The elevated window is hidden; output can't cross the elevation boundary, so the
+/// script reports through its exit code.
+pub(crate) async fn run_elevated_powershell(inner: &str, timeout: Duration) -> Result<i32, String> {
+    let mut cmd = hidden_command(powershell_path());
+    cmd.args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &encode_powershell(&elevation_launcher(inner))])
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(timeout, cmd.output())
+        .await
+        .map_err(|_| "Tempo esgotado aguardando a tarefa de administrador".to_string())?
+        .map_err(|e| format!("Falha ao executar o PowerShell: {e}"))?;
+    Ok(output.status.code().unwrap_or(-1))
+}
+
 /// Base `wsl.exe` command: hidden console window + UTF-8 output.
 pub fn wsl_command() -> Command {
     let mut cmd = hidden_command("wsl.exe");
@@ -112,8 +168,28 @@ pub(crate) async fn run(cmd: Command, timeout: Duration) -> Result<String, Strin
     run_raw(cmd, timeout, None).await.map(|bytes| decode_output(&bytes))
 }
 
+/// Most stdout (and stderr) kept from one command. File reads ask for far less (4 MB); this only
+/// guards against a runaway command filling the app's memory.
+pub const MAX_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
+
+/// Reads a whole stream keeping at most `cap` bytes. The rest is still read (and dropped), so
+/// the child never blocks on a full pipe.
+pub(crate) async fn read_capped(mut reader: impl tokio::io::AsyncRead + Unpin, cap: usize) -> std::io::Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+    let mut out = Vec::new();
+    let mut chunk = vec![0u8; 64 * 1024];
+    loop {
+        let n = reader.read(&mut chunk).await?;
+        if n == 0 {
+            return Ok(out);
+        }
+        let room = cap.saturating_sub(out.len());
+        out.extend_from_slice(&chunk[..n.min(room)]);
+    }
+}
+
 /// Like [`run`], but returns stdout bytes untouched (file contents) and optionally
-/// feeds `stdin` to the process.
+/// feeds `stdin` to the process. Output is capped at [`MAX_OUTPUT_BYTES`] per stream.
 pub(crate) async fn run_raw(
     mut cmd: Command,
     timeout: Duration,
@@ -124,23 +200,43 @@ pub(crate) async fn run_raw(
             cmd.stdin(Stdio::piped());
         }
         let mut child = cmd.spawn()?;
-        if let (Some(data), Some(mut pipe)) = (stdin, child.stdin.take()) {
-            use tokio::io::AsyncWriteExt;
-            pipe.write_all(data).await?;
-            // Dropping the pipe sends EOF.
-        }
-        child.wait_with_output().await
+        let input = child.stdin.take();
+        let (stdout, stderr) = (child.stdout.take(), child.stderr.take());
+        // Written while the output is read: a big input never deadlocks against a full pipe.
+        let write = async move {
+            if let (Some(data), Some(mut pipe)) = (stdin, input) {
+                use tokio::io::AsyncWriteExt;
+                pipe.write_all(data).await?;
+                // Dropping the pipe sends EOF.
+            }
+            Ok::<(), std::io::Error>(())
+        };
+        let out = async {
+            match stdout {
+                Some(s) => read_capped(s, MAX_OUTPUT_BYTES).await,
+                None => Ok(Vec::new()),
+            }
+        };
+        let err = async {
+            match stderr {
+                Some(s) => read_capped(s, MAX_OUTPUT_BYTES).await,
+                None => Ok(Vec::new()),
+            }
+        };
+        let (_, out, err) = tokio::try_join!(write, out, err)?;
+        let status = child.wait().await?;
+        Ok::<_, std::io::Error>((status, out, err))
     };
-    let output = tokio::time::timeout(timeout, task)
+    let (status, stdout, stderr) = tokio::time::timeout(timeout, task)
         .await
         .map_err(|_| "Tempo esgotado aguardando o wsl.exe".to_string())?
         .map_err(|e| format!("Falha ao executar wsl.exe: {e}"))?;
 
-    if output.status.success() {
-        Ok(output.stdout)
+    if status.success() {
+        Ok(stdout)
     } else {
-        let stderr = decode_output(&output.stderr);
-        let msg = if stderr.trim().is_empty() { decode_output(&output.stdout) } else { stderr };
+        let stderr = decode_output(&stderr);
+        let msg = if stderr.trim().is_empty() { decode_output(&stdout) } else { stderr };
         Err(msg.trim().to_string())
     }
 }
@@ -378,6 +474,48 @@ mod tests {
         let info = parse_version(text);
         assert_eq!(info.wsl_version.as_deref(), Some("2.3.24.0"));
         assert_eq!(info.kernel_version.as_deref(), Some("5.15.153.1-2"));
+    }
+
+    #[test]
+    fn encodes_powershell_commands() {
+        // `powershell -EncodedCommand` wants Base64 of UTF-16LE.
+        assert_eq!(encode_powershell("a"), "YQA=");
+        assert_eq!(encode_powershell("exit 0"), "ZQB4AGkAdAAgADAA");
+        assert_eq!(encode_powershell("ç"), "5wA=");
+        assert_eq!(encode_powershell(""), "");
+        assert!(powershell_path().ends_with(r"System32\WindowsPowerShell\v1.0\powershell.exe"));
+        assert!(powershell_path().is_absolute());
+    }
+
+    /// The real powershell.exe decodes our Base64 (accents, quotes, newlines) and its exit code
+    /// comes back: the same path the elevated launcher uses, minus the UAC prompt.
+    #[tokio::test]
+    async fn encoded_command_round_trip() {
+        let script = "$s = 'ação d''água'\nif ($s.Length -eq 11) { exit 42 } else { exit 7 }";
+        let mut cmd = hidden_command(powershell_path());
+        cmd.args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &encode_powershell(script)]);
+        let status = cmd.output().await.expect("powershell").status;
+        assert_eq!(status.code(), Some(42));
+    }
+
+    #[tokio::test]
+    async fn output_is_capped_and_fully_drained() {
+        // Security audit (0.1.3): a runaway command can't fill the app's memory.
+        let data = vec![b'x'; 3 * 1024 * 1024];
+        let kept = read_capped(data.as_slice(), 1024 * 1024).await.unwrap();
+        assert_eq!(kept.len(), 1024 * 1024);
+        assert_eq!(read_capped(&b"curto"[..], MAX_OUTPUT_BYTES).await.unwrap(), b"curto");
+    }
+
+    /// A real process writing more than the cap still finishes (the excess is drained, not left
+    /// in the pipe) and run_raw returns exactly MAX_OUTPUT_BYTES.
+    #[tokio::test]
+    async fn run_raw_caps_a_real_process() {
+        let mut cmd = hidden_command(powershell_path());
+        let script = format!("[Console]::Out.Write('x' * {}); [Console]::Out.Flush()", MAX_OUTPUT_BYTES + 3 * 1024 * 1024);
+        cmd.args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &encode_powershell(&script)]);
+        let out = run_raw(cmd, Duration::from_secs(60), None).await.expect("finishes");
+        assert_eq!(out.len(), MAX_OUTPUT_BYTES);
     }
 
     #[test]

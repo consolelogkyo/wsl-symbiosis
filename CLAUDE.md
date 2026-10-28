@@ -61,6 +61,8 @@ src/                      # frontend React
   components/CloseDialog.tsx   # ✕ com closeBehavior "ask": bandeja ou fechar, "Lembrar minha escolha"
   lib/wslconfig.ts        # tipos/invoke do wslconfig.rs; components/WslConfigDialog.tsx (Limites do Linux)
   components/dashboard/CompactVhdxDialog.tsx  # confirmar → compactar (UAC) → antes/depois
+  components/GitIdentityPanel.tsx  # useGitIdentity + GitIdentityCard + SshKeyCard (Configurações → Git e setup)
+  components/dashboard/BackupDistroDialog.tsx # backup (.tar) e restauração; lib/backup.ts, lib/ssh.ts
   components/             # Titlebar (janela sem bordas), Sidebar (+ AO VIVO), Logo, DistroSelect,
                           # StatusDot, SettingsDialog (abas Sistema & IDEs / Git / Atalhos; o 1º uso agora é o setup),
                           # ShortcutsSettings (gravador de atalhos, gestos de mouse, fixos),
@@ -90,6 +92,9 @@ src-tauri/src/
   tray.rs                 # bandeja: ícone, menu ao vivo (loop próprio), closeBehavior, quit limpo
   wslconfig.rs            # editor não destrutivo do %USERPROFILE%\.wslconfig (IniDoc)
   vhdx.rs                 # ext4.vhdx pelo registro (Lxss) e compactação elevada (Optimize-VHD/diskpart)
+  ssh.rs                  # identidade git (user.name/email) e chaves SSH: gerar, importar do Windows, chmod, teste
+  backup.rs               # wsl --export (.tar) / --import (restaurar ou clonar com outro nome)
+  lines.rs                # BoundedLines: leitura de saída linha a linha com teto por linha (16 KB)
 scripts/build-release.mjs # npm run release:build → instalador assinado + latest.json em dist-release/
 src-tauri/icons/
   app-icon.svg            # fonte do ícone; regenerar com `npx tauri icon src-tauri/icons/app-icon.svg`
@@ -295,8 +300,9 @@ O usuário tem `Ubuntu` (procps) e `docker-desktop` (busybox). Scripts dentro da
   "Ubuntu" (pacote da Store visível + WSL oculto): `find_distro_profile` prefere o visível.
   `serde_json` com `preserve_order` mantém a ordem das chaves do usuário.
 - Senha do Linux: só por stdin para `chpasswd`; nunca em argumento, log ou settings.
-- `enable_wsl_engine`: script .ps1 temporário elevado (`Start-Process -Verb RunAs`), códigos do DISM
-  num arquivo (3010 = reiniciar) → `settings.wslRebootPending` (o `save_settings` preserva esse campo).
+- `enable_wsl_engine`: `ENABLE_WSL_PS1` elevado em memória (`wsl::run_elevated_powershell`); o código de
+  saída é o resultado (0 ok, 3010 = reiniciar, outro = erro do DISM) → `settings.wslRebootPending` (o
+  `save_settings` preserva esse campo).
 - Scripts Linux usam PATH só Linux (`LINUX_PATH`), senão o `git.exe` do Windows apareceria.
 - Teste real só-leitura: `WSL_TEST_DISTRO=Ubuntu cargo test --lib live_setup -- --ignored`
   (o patch do .zshrc roda num HOME descartável em /tmp).
@@ -335,10 +341,61 @@ O usuário tem `Ubuntu` (procps) e `docker-desktop` (busybox). Scripts dentro da
 - **VHDX** (`vhdx.rs`): caminho = `HKCU\...\Lxss\{guid}` (`DistributionName`, `BasePath` sem `\\?\`,
   `VhdFileName` ou `ext4.vhdx`). Entra nas métricas (`vhdx`), inclusive com a distro parada.
   Compactar: `fstrim` como root (pode ligar a distro: ação do usuário) → `shutdown_all` → espera o
-  `vmmemWSL` sumir → um .ps1 elevado tenta `Optimize-VHD -Mode Full` e cai no `diskpart`
-  (`attach vdisk readonly` + `compact vdisk`). O caminho passa por `validate_vhdx_path` (só `X:\...\*.vhdx`,
+  `vmmemWSL` sumir → script elevado em memória (`compact_script`) tenta `Optimize-VHD -Mode Full` e
+  cai no `diskpart` por stdin (`attach vdisk readonly` + `compact vdisk`); códigos 100/101 = sucesso. O caminho passa por `validate_vhdx_path` (só `X:\...\*.vhdx`,
   sem `"`/controle/`..`) antes de entrar no script do diskpart.
 - Teste real só-leitura: `WSL_TEST_DISTRO=Ubuntu cargo test --lib live_vhdx -- --ignored --nocapture`.
+
+### 3.7.5 Git, SSH, .env e backups (0.1.5)
+- **ssh.rs** roda como o usuário padrão, com PATH só Linux (nunca o `ssh.exe`/`git.exe` do Windows) e
+  exige a distro ligada (`ensure_running`; a UI oferece "Ligar a distro"). Distros de sistema são recusadas.
+  - Nada é sobrescrito: `id_ed25519` existente bloqueia a geração; chave do Windows com o mesmo nome
+    de uma do Linux é pulada.
+  - Chaves privadas importadas vão por **stdin** (nunca em argumento), com CRLF → LF.
+  - `~/.ssh/config` recebe só um bloco `StrictHostKeyChecking accept-new` para github.com/gitlab.com,
+    **no início** (o ssh usa o primeiro valor), e só para hosts que o usuário ainda não declarou.
+    Backup `config.symbiosis.bak` na 1ª edição.
+  - Permissões: `ssh_file_mode` decide (privada 600, .pub/config/known_hosts 644, desconhecidos
+    intocados) a partir de nome + 1ª linha. `permissions_secure`: ~/.ssh sem escrita para outros,
+    privadas sem nenhum bit de grupo/outros.
+  - O teste `ssh -T git@github.com` roda no shell de login (agent do .zshrc) e sai com código 1 mesmo
+    autenticado: o resultado vem do texto ("Hi <user>!").
+- **.env**: os marcadores incluem `.env`, `.env.example`, `.env.template`, `.env.sample`; `pick_env_template`
+  (testada) escolhe example > template > sample e recusa se já houver `.env`; a cópia usa `cp -n`.
+  A linha mostra "+ Criar .env" e abre o arquivo no `FileEditor` em seguida.
+- **backup.rs**: `wsl --export` / `--import --version 2`. Caminhos só `X:\...` (sem `"`, controle ou `..`),
+  extensão `.tar`; nome novo não pode existir (WSL ignora maiúsculas); pasta de instalação sem `ext4.vhdx`.
+  Uma operação por vez. Depois do import, o 1º usuário comum (UID 1000–59999) vira `[user] default`
+  no `/etc/wsl.conf` se o backup não define um (a Store guarda o usuário padrão no registro, que o .tar não leva).
+- E2E do backup com distro descartável (Alpine minirootfs, confira o SHA256 do `latest-releases.yaml`):
+  `WSL_E2E_ROOTFS=<alpine-minirootfs.tar.gz> cargo test --lib live_backup -- --ignored --nocapture`.
+  Outros reais: `live_ssh` (HOME descartável em /tmp) e `live_env` (pasta em /tmp), com `WSL_TEST_DISTRO`.
+- Diálogos abertos dentro de uma tela usam **portal** para o `<body>`: `space-y-*` no layout dá margem ao
+  overlay `fixed inset-0` e corta o fundo (bug da 0.1.4).
+
+### 3.7.6 Regras de segurança (auditoria da 0.1.3, aplicadas na 0.1.5)
+- **Elevação (UAC) só em memória:** use `wsl::run_elevated_powershell(script, timeout)`. Ele roda o
+  PowerShell do sistema (`wsl::powershell_path()`, nunca `powershell.exe` pelo PATH), e o script vai
+  em `-EncodedCommand` (Base64 UTF-16LE, `encode_powershell`). O resultado volta **só pelo código de
+  saída** (`Start-Process -Verb RunAs -PassThru`; `UAC_CANCELLED` = 1223). **Nunca** grave `.ps1`, `.txt`
+  ou script de diskpart em %TEMP% para um processo elevado (TOCTOU: outro processo troca o arquivo
+  enquanto o UAC espera). O diskpart recebe os comandos por stdin. Ferramentas do sistema dentro do
+  script vão pelo caminho absoluto (`$env:SystemRoot\System32\...`).
+- **Excluir/renomear:** além da checagem léxica (`is_protected`), os scripts resolvem o caminho
+  **físico** no Linux (`PHYSICAL_GUARD`: `cd -P` no pai e `readlink -f` no alvo) e aplicam a mesma regra
+  em shell, que precisa continuar espelhando `is_protected`. O teste `live_symlink` compara os dois.
+  Um symlink em si pode ser apagado e renomeado: só o link é afetado.
+- **Strings:** nunca `&s[..n]` com `n` que não venha de `find`/`len` de um trecho ASCII; para
+  prefixos, compare bytes (`s.as_bytes()[..n].eq_ignore_ascii_case(...)`) ou use `s.get(..n)`. Com
+  `panic = "abort"`, um panic de fronteira UTF-8 fecha o app.
+- **Saída de processos:** linha a linha com `lines::BoundedLines` (16 KB por linha, depois
+  `… [linha truncada]`), nunca `BufReader::lines()`/`read_until`. Canais de log limitados
+  (`mpsc::channel`, não `unbounded`). `wsl::run_raw` guarda no máximo `MAX_OUTPUT_BYTES` (16 MB) por
+  stream e drena o resto (`read_capped`), para o processo nunca travar.
+- **CSP** em `tauri.conf.json`: só `'self'` para scripts; estilos inline liberados (Tailwind/xterm);
+  imagens `data:` (ícones das IDEs); IPC `ipc:`/`http://ipc.localhost`. Nada de scripts inline nem
+  CDN no `index.html`. Para conferir no app real: rode o `.exe` de release com
+  `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9223` e inspecione via CDP.
 
 ### 3.8 Memória do WSL no Windows
 - Uma única chamada `NtQuerySystemInformation` por amostra, **sem cache de PID**, porque a VM nasce

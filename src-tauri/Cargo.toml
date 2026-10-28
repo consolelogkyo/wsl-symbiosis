@@ -1,6 +1,6 @@
 [package]
 name = "wsl-symbiosis"
-version = "0.1.4"
+version = "0.1.5"
 description = "Simbiose visual entre Windows e WSL2"
 authors = ["WSL Symbiosis"]
 edition = "2024"

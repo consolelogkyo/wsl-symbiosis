@@ -23,7 +23,7 @@ const MAX_WRITE_BYTES: usize = 4 * 1024 * 1024;
 
 /// Files/folders whose presence inside a subfolder marks it as a project (or as heavy,
 /// cleanable build output: node_modules, target).
-pub const PROJECT_MARKERS: [&str; 15] = [
+pub const PROJECT_MARKERS: [&str; 19] = [
     "package.json",
     "Cargo.toml",
     "pyproject.toml",
@@ -39,7 +39,28 @@ pub const PROJECT_MARKERS: [&str; 15] = [
     "target",
     ".venv",
     "venv",
+    // Environment files: the row offers "+ Criar .env" when there is a template but no .env.
+    ".env",
+    ".env.example",
+    ".env.template",
+    ".env.sample",
 ];
+
+/// Templates `create_env_from_example` copies to `.env`, in order of preference.
+pub const ENV_TEMPLATES: [&str; 3] = [".env.example", ".env.template", ".env.sample"];
+
+/// Given which env files exist in a project folder, the template to copy. Never when `.env`
+/// already exists (it holds the user's secrets).
+pub fn pick_env_template(present: &[&str]) -> Result<&'static str, String> {
+    if present.contains(&".env") {
+        return Err("Este projeto já tem um .env: abra o arquivo para editar (ele não é substituído)".into());
+    }
+    ENV_TEMPLATES
+        .iter()
+        .find(|t| present.contains(t))
+        .copied()
+        .ok_or_else(|| "Nenhum modelo encontrado (.env.example, .env.template ou .env.sample)".to_string())
+}
 
 // ---------------------------------------------------------------------------
 // Types (mirrored in src/lib/explorer.ts)
@@ -395,7 +416,7 @@ pub fn parse_read_output(path: &str, raw: &[u8]) -> Result<TextFileContent, Stri
             binary: false,
         },
         // A truncated read may cut a multi-byte char at the end; that alone is not binary.
-        None if truncated && std::str::from_utf8(&bytes[..bytes.len().saturating_sub(3)]).is_ok() => {
+        None if truncated && !bytes.contains(&0) && std::str::from_utf8(bytes).err().is_some_and(|e| e.error_len().is_none()) => {
             let text = String::from_utf8_lossy(bytes).trim_end_matches('\u{FFFD}').to_string();
             TextFileContent {
                 path: path.to_string(),
@@ -459,6 +480,78 @@ pub(crate) async fn new_file(distro: &str, path: &str) -> Result<(), String> {
     sh(distro, script, &[&path]).await.map(|_| ())
 }
 
+/// Copies the project's `.env.example` (or `.template` / `.sample`) to `.env` and returns the new
+/// file's path. Byte-for-byte copy (`cp -n`: never overwrites, even if a `.env` shows up in between).
+pub(crate) async fn create_env(distro: &str, project: &str) -> Result<String, String> {
+    let project = normalize_linux_path(project)?;
+    ensure_running(distro).await?;
+    let probe = r#"cd -- "$1" || exit 3
+for f in .env .env.example .env.template .env.sample; do
+  if [ -e "$f" ] || [ -L "$f" ]; then echo "$f"; fi
+done
+exit 0"#;
+    let listing = sh(distro, probe, &[&project]).await?;
+    let present: Vec<&str> = listing.lines().map(str::trim).collect();
+    let template = pick_env_template(&present)?;
+    let copy = r#"cd -- "$1" || exit 3
+if [ -e .env ] || [ -L .env ]; then echo "o .env ja existe" >&2; exit 6; fi
+cp -n -- "$2" .env && [ -f .env ]"#;
+    sh(distro, copy, &[&project, template]).await?;
+    Ok(join(&project, ".env"))
+}
+
+/// The lexical check (`is_protected`) can be fooled by a symlink in the middle of the path:
+/// `/tmp/atalho/kyo` with `/tmp/atalho -> /home` is really `/home/kyo`. Before `rm`/`mv`, the
+/// scripts resolve the **physical** path in Linux (`cd -P` on the parent, `readlink -f` on the
+/// target) and check it against the same rule, here in shell (mirrors [`is_protected`]):
+/// `/`, every top-level directory, `/home/<user>` and `/mnt/<drive>`.
+const PHYSICAL_GUARD: &str = r#"is_protected() {
+  [ "$1" = / ] && return 0
+  r=${1#/}
+  case $r in
+    */*/*) return 1 ;;
+    home/*|mnt/*) return 0 ;;
+    */*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+physical() {
+  n=${1##*/}; d=${1%/*}; [ -n "$d" ] || d=/
+  rd=$(cd -P -- "$d" 2>/dev/null && pwd -P) || return 1
+  if [ "$rd" = / ]; then echo "/$n"; else echo "$rd/$n"; fi
+}
+guard() {
+  if is_protected "$1"; then echo "@@protected $1"; exit 9; fi
+  if [ ! -L "$1" ] && [ -e "$1" ]; then
+    real=$(readlink -f -- "$1" 2>/dev/null) || real=$1
+    if is_protected "$real"; then echo "@@protected $real"; exit 9; fi
+  fi
+}
+"#;
+
+/// A symlink entry itself is fine to delete or rename (only the link goes); what it points to is
+/// checked only for real folders and files.
+const DELETE_SCRIPT: &str = r#"p=$(physical "$1") || { echo "pasta nao encontrada: $1" >&2; exit 3; }
+guard "$p"
+rm -rf -- "$p""#;
+
+const RENAME_SCRIPT: &str = r#"old=$(physical "$1") || { echo "origem nao encontrada: $1" >&2; exit 3; }
+new=$(physical "$2") || { echo "pasta de destino nao encontrada: $2" >&2; exit 3; }
+guard "$old"
+guard "$new"
+if [ -e "$new" ] || [ -L "$new" ]; then echo "destino ja existe: $2" >&2; exit 1; fi
+mv -- "$old" "$new""#;
+
+/// `@@protected <physical path>` from [`PHYSICAL_GUARD`] → a sentence for the user.
+pub fn explain_fs_error(raw: &str, action: &str) -> String {
+    match raw.lines().find_map(|l| l.trim().strip_prefix("@@protected ")) {
+        Some(real) => format!(
+            "Não dá para {action}: o caminho leva a {real}, uma pasta protegida (do sistema, a pasta pessoal de um usuário ou um disco do Windows)"
+        ),
+        None => raw.to_string(),
+    }
+}
+
 pub(crate) async fn rename(distro: &str, old_path: &str, new_path: &str) -> Result<(), String> {
     let (old_path, new_path) = (normalize_linux_path(old_path)?, normalize_linux_path(new_path)?);
     if is_protected(&old_path) {
@@ -466,8 +559,8 @@ pub(crate) async fn rename(distro: &str, old_path: &str, new_path: &str) -> Resu
     }
     validate_new_path(&new_path)?;
     ensure_running(distro).await?;
-    let script = r#"if [ -e "$2" ] || [ -L "$2" ]; then echo "destino ja existe: $2" >&2; exit 1; fi; mv -- "$1" "$2""#;
-    sh(distro, script, &[&old_path, &new_path]).await.map(|_| ())
+    let script = format!("{PHYSICAL_GUARD}{RENAME_SCRIPT}");
+    sh(distro, &script, &[&old_path, &new_path]).await.map(|_| ()).map_err(|e| explain_fs_error(&e, "renomear"))
 }
 
 pub(crate) async fn delete(distro: &str, path: &str) -> Result<(), String> {
@@ -476,7 +569,8 @@ pub(crate) async fn delete(distro: &str, path: &str) -> Result<(), String> {
         return Err(format!("{path} é protegido e não pode ser excluído"));
     }
     ensure_running(distro).await?;
-    sh(distro, r#"rm -rf -- "$1""#, &[&path]).await.map(|_| ())
+    let script = format!("{PHYSICAL_GUARD}{DELETE_SCRIPT}");
+    sh(distro, &script, &[&path]).await.map(|_| ()).map_err(|e| explain_fs_error(&e, "excluir"))
 }
 
 pub(crate) async fn read_text(distro: &str, path: &str, max_bytes: Option<usize>) -> Result<TextFileContent, String> {
@@ -705,7 +799,7 @@ async fn extract_icons(paths: &[PathBuf]) -> Result<Vec<Option<String>>, String>
         $icon.ToBitmap().Save($ms, [System.Drawing.Imaging.ImageFormat]::Png); $b = [Convert]::ToBase64String($ms.ToArray()) } catch {}; \
         Write-Output ($i.ToString() + ':' + $b); $i++ }";
     let joined = paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("\n");
-    let mut cmd = hidden_command("powershell.exe");
+    let mut cmd = hidden_command(crate::wsl::powershell_path());
     cmd.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", SCRIPT])
         .env("WSLSYM_ICON_PATHS", joined);
     let out = run(cmd, ICON_TIMEOUT).await?;
@@ -821,6 +915,12 @@ pub async fn create_file(distro: String, path: String) -> Result<(), String> {
     new_file(&distro, &path).await
 }
 
+/// "+ Criar .env" on a project row: the new file's path (the UI opens it in the editor).
+#[tauri::command]
+pub async fn create_env_from_example(distro: String, project_path: String) -> Result<String, String> {
+    create_env(&distro, &project_path).await
+}
+
 #[tauri::command]
 pub async fn rename_entry(distro: String, old_path: String, new_path: String) -> Result<(), String> {
     rename(&distro, &old_path, &new_path).await
@@ -903,6 +1003,113 @@ pub async fn get_tool_icons(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn picks_env_template_without_overwriting() {
+        assert_eq!(pick_env_template(&[".env.example"]), Ok(".env.example"));
+        assert_eq!(pick_env_template(&[".env.sample", ".env.template"]), Ok(".env.template"), "example > template > sample");
+        assert_eq!(pick_env_template(&[".env.sample"]), Ok(".env.sample"));
+        assert!(pick_env_template(&[".env", ".env.example"]).unwrap_err().contains("já tem um .env"));
+        assert!(pick_env_template(&[]).unwrap_err().contains("Nenhum modelo"));
+        assert!(pick_env_template(&[".env.local", ".env.production"]).is_err(), "only the 3 template names");
+        for t in ENV_TEMPLATES {
+            assert!(PROJECT_MARKERS.contains(&t), "{t} is listed as a marker");
+        }
+        assert!(PROJECT_MARKERS.contains(&".env"));
+    }
+
+    #[test]
+    fn truncated_read_cutting_a_multibyte_char_is_still_text() {
+        // "ação" is 6 bytes; a 4-byte read ends in the middle of "ã".
+        let raw = [b"6\n".as_slice(), &"ação".as_bytes()[..4]].concat();
+        let read = parse_read_output("/tmp/x", &raw).unwrap();
+        assert!(!read.binary && read.truncated);
+        assert_eq!(read.content, "aç");
+        let invalid = [b"10\n".as_slice(), b"ab\xff\xfecd"].concat();
+        assert!(parse_read_output("/tmp/y", &invalid).unwrap().binary, "invalid bytes in the middle = binary");
+    }
+
+    #[test]
+    fn explains_protected_physical_paths() {
+        let e = explain_fs_error("@@protected /home/kyo\n", "excluir");
+        assert!(e.starts_with("Não dá para excluir: o caminho leva a /home/kyo"), "{e}");
+        assert_eq!(explain_fs_error("mv: cannot move", "renomear"), "mv: cannot move");
+        assert!(PHYSICAL_GUARD.contains("cd -P") && PHYSICAL_GUARD.contains("readlink -f"));
+    }
+
+    /// Security audit (0.1.3): a symlink in the middle of the path must not let delete/rename reach
+    /// /home/<user>, /mnt/<drive> or a top-level folder. Also checks that the shell rule matches
+    /// `is_protected` path by path.
+    /// `WSL_TEST_DISTRO=Ubuntu cargo test --lib live_symlink -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore]
+    async fn live_symlink_cannot_escape_protection() {
+        let distro = std::env::var("WSL_TEST_DISTRO").expect("set WSL_TEST_DISTRO");
+        let root = format!("/tmp/wsls-sym-{}", std::process::id());
+        let user = sh(&distro, "id -un", &[]).await.unwrap().trim().to_string();
+        let setup = r#"rm -rf "$1"; mkdir -p "$1/livre/sub"; ln -s /home "$1/atalho-home"; ln -s /mnt "$1/atalho-mnt"; ln -s / "$1/atalho-raiz"; echo x > "$1/arquivo""#;
+        sh(&distro, setup, &[&root]).await.unwrap();
+
+        // The shell rule and the Rust rule agree.
+        for p in ["/", "/home", "/etc", "/home/kyo", "/mnt/c", "/home/kyo/proj", "/mnt/c/Users", "/usr/bin", "/tmp/x/y"] {
+            let script = format!("{PHYSICAL_GUARD}if is_protected \"$1\"; then echo yes; else echo no; fi");
+            let shell = sh(&distro, &script, &[p]).await.unwrap();
+            assert_eq!(shell.trim() == "yes", is_protected(p), "{p}");
+        }
+
+        let blocked = [
+            format!("{root}/atalho-home/{user}"),
+            format!("{root}/atalho-mnt/c"),
+            format!("{root}/atalho-raiz/etc"),
+            format!("{root}/atalho-raiz/home"),
+        ];
+        for target in &blocked {
+            assert!(!is_protected(target), "lexically it looks harmless: {target}");
+            let err = delete(&distro, target).await.unwrap_err();
+            assert!(err.contains("pasta protegida"), "delete {target}: {err}");
+            let err = rename(&distro, target, &format!("{root}/renomeado")).await.unwrap_err();
+            assert!(err.contains("pasta protegida"), "rename {target}: {err}");
+        }
+        // Moving something *into* a protected-shaped place through a link is refused too.
+        let err = rename(&distro, &format!("{root}/arquivo"), &format!("{root}/atalho-home/novo-usuario")).await.unwrap_err();
+        assert!(err.contains("pasta protegida"), "{err}");
+
+        // Still intact.
+        let check = sh(&distro, r#"[ -d "/home/$1" ] && [ -d /mnt/c ] && [ -d /etc ] && echo ok"#, &[&user]).await.unwrap();
+        assert_eq!(check.trim(), "ok");
+
+        // Normal operations keep working, including removing the link itself (not its target).
+        rename(&distro, &format!("{root}/livre/sub"), &format!("{root}/livre/sub2")).await.expect("rename");
+        delete(&distro, &format!("{root}/livre/sub2")).await.expect("delete");
+        delete(&distro, &format!("{root}/atalho-home")).await.expect("delete the link itself");
+        let check = sh(&distro, r#"[ -d "/home/$1" ] && [ ! -e "$2/atalho-home" ] && echo ok"#, &[&user, &root]).await.unwrap();
+        assert_eq!(check.trim(), "ok", "only the link went away");
+
+        sh(&distro, r#"rm -rf "$1""#, &[&root]).await.unwrap();
+    }
+
+    /// `WSL_TEST_DISTRO=Ubuntu cargo test --lib live_env -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore]
+    async fn live_env_from_example() {
+        let distro = std::env::var("WSL_TEST_DISTRO").expect("set WSL_TEST_DISTRO");
+        let dir = format!("/tmp/wsls-env-{}", std::process::id());
+        let setup = r#"rm -rf "$1"; mkdir -p "$1/app"; printf 'API_URL=\nTOKEN=troque-me\n' > "$1/app/.env.sample"; printf 'X=1\n' > "$1/app/.env.template""#;
+        sh(&distro, setup, &[&dir]).await.unwrap();
+
+        let listing = list(&distro, &dir, false).await.unwrap();
+        assert_eq!(listing.entries[0].project_markers, [".env.template", ".env.sample"]);
+
+        let app = format!("{dir}/app");
+        assert_eq!(create_env(&distro, &app).await.unwrap(), format!("{app}/.env"));
+        let content = sh(&distro, r#"cat "$1/.env""#, &[&app]).await.unwrap();
+        assert_eq!(content, "X=1\n", ".env.template wins over .env.sample");
+
+        sh(&distro, r#"echo SEGREDO=1 > "$1/.env""#, &[&app]).await.unwrap();
+        assert!(create_env(&distro, &app).await.unwrap_err().contains("já tem um .env"));
+        assert_eq!(sh(&distro, r#"cat "$1/.env""#, &[&app]).await.unwrap(), "SEGREDO=1\n", "never overwritten");
+        sh(&distro, r#"rm -rf "$1""#, &[&dir]).await.unwrap();
+    }
 
     #[test]
     fn normalizes_paths() {

@@ -22,6 +22,7 @@ import { LogoMark } from "../components/Logo";
 import { SetupIntro } from "../components/SetupIntro";
 import { WindowControls } from "../components/Titlebar";
 import { IdeGrid, ToolPathList } from "../components/ToolSettings";
+import { GitIdentityCard, SshKeyCard, useGitIdentity } from "../components/GitIdentityPanel";
 import { reloadTools, useTools } from "../hooks/useTools";
 import { useToolPaths } from "../hooks/useToolPaths";
 import type { ToolId, ToolInfo } from "../lib/explorer";
@@ -63,7 +64,7 @@ const STEPS = [
   { title: "Diagnóstico", hint: "O que já existe aqui" },
   { title: "Sistema & Distro", hint: "WSL2 e Linux" },
   { title: "Ambiente", hint: "Terminal, zsh, Node" },
-  { title: "IDEs", hint: "Editor favorito" },
+  { title: "IDEs & Git", hint: "Editor e GitHub" },
   { title: "Aplicar", hint: "Progresso ao vivo" },
 ];
 
@@ -316,6 +317,7 @@ export function SetupWizardView({ firstRun, settings, initialDistro, onDistrosCh
                     onBrowse={toolPaths.browse}
                   />
                 </Section>
+                {distro && <GitSetupSections distro={distro} />}
               </>
             )}
             {step === 4 && (
@@ -585,6 +587,21 @@ function DiagList({ rows }: { rows: DiagRowProps[] }) {
 // ---------------------------------------------------------------------------
 
 const IDE_LABELS: Record<keyof typeof IDE_DOWNLOADS, string> = { antigravity: "Antigravity", vscode: "VS Code", cursor: "Cursor" };
+
+/** Optional: identity for commits and the SSH key, right in the first access (same cards as Settings → Git). */
+function GitSetupSections({ distro }: { distro: string }) {
+  const identity = useGitIdentity(distro);
+  return (
+    <>
+      <Section index="03" title="Quem é você nos commits (opcional)" hint="Pode deixar para depois">
+        <GitIdentityCard distro={distro} identity={identity} />
+      </Section>
+      <Section index="04" title="Chave de acesso ao GitHub (opcional)" hint="Configurações → Git, a qualquer momento">
+        <SshKeyCard distro={distro} identity={identity} />
+      </Section>
+    </>
+  );
+}
 
 function IdeDownloads({ tools, onRescan }: { tools: ToolInfo[] | null; onRescan: () => void }) {
   if (!tools) return null;

@@ -4,7 +4,6 @@ import type { TerminalRequest } from "./views/TerminalView";
 import { AlertTriangle, X } from "lucide-react";
 import { Titlebar } from "./components/Titlebar";
 import { Sidebar } from "./components/Sidebar";
-import { SettingsDialog } from "./components/SettingsDialog";
 import { useWsl } from "./hooks/useWsl";
 import { useMetrics } from "./hooks/useMetrics";
 import { ActivityContext, useActivity } from "./hooks/useActivity";
@@ -32,6 +31,8 @@ const FORCE_SETUP = import.meta.env.DEV && import.meta.env.VITE_FORCE_SETUP === 
 
 // xterm is heavy; load it only when the Terminal screen is opened.
 const TerminalView = lazy(() => import("./views/TerminalView").then((m) => ({ default: m.TerminalView })));
+// Opened on demand (Git keys, shortcuts recorder, tool paths): kept out of the main bundle.
+const SettingsDialog = lazy(() => import("./components/SettingsDialog").then((m) => ({ default: m.SettingsDialog })));
 // The setup runs once per machine: kept out of the main bundle.
 const SetupWizardView = lazy(() => import("./views/SetupWizardView").then((m) => ({ default: m.SetupWizardView })));
 
@@ -191,6 +192,7 @@ export default function App() {
                 telemetry={telemetry}
                 onSelect={wsl.select}
                 onStart={wsl.start}
+                onDistrosChanged={wsl.refresh}
               />
             )}
             {explorerMounted && (
@@ -225,6 +227,7 @@ export default function App() {
       </div>
 
       {settingsOpen && settings && (
+        <Suspense fallback={null}>
         <SettingsDialog
           onboarding={!settings.onboardingCompleted}
           settings={settings}
@@ -243,6 +246,7 @@ export default function App() {
             setSetupMode(true);
           }}
         />
+        </Suspense>
       )}
 
       {updater.dialogOpen && <UpdateDialog />}

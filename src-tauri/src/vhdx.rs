@@ -3,7 +3,9 @@
 //! The VHDX grows as Linux writes but never shrinks when files are deleted. Compacting needs the
 //! file released (`wsl --shutdown`) and admin rights: `Optimize-VHD` where the Hyper-V module
 //! exists (Pro), otherwise `diskpart` (every edition, Home included). Both run in one elevated
-//! PowerShell, so the user sees a single UAC prompt.
+//! PowerShell, so the user sees a single UAC prompt. The elevated script travels in memory
+//! (`-EncodedCommand`) and diskpart reads its commands from stdin: no file in %TEMP% that another
+//! process could swap while the UAC prompt waits.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,7 +14,7 @@ use std::time::Duration;
 use serde::Serialize;
 use tauri::AppHandle;
 
-use crate::wsl::{hidden_command, run, sh_in_distro, validate_distro_name};
+use crate::wsl::{run, sh_in_distro, validate_distro_name};
 
 /// Big disks take minutes; the UAC prompt also waits for the user.
 const COMPACT_TIMEOUT: Duration = Duration::from_secs(30 * 60);
@@ -119,31 +121,43 @@ pub fn diskpart_script(vhdx: &str) -> String {
     format!("select vdisk file=\"{vhdx}\"\r\nattach vdisk readonly\r\ncompact vdisk\r\ndetach vdisk\r\nexit\r\n")
 }
 
-/// Runs elevated. First line of `$out`: `<method> <exit code>`; then diskpart's output.
-const COMPACT_PS1: &str = r#"param($vhdx, $script, $out)
-$method = 'optimize-vhd'
-$code = 0
-$log = ''
-try {
-  if (-not (Get-Command Optimize-VHD -ErrorAction SilentlyContinue)) { throw 'sem Hyper-V' }
-  Optimize-VHD -Path $vhdx -Mode Full -ErrorAction Stop
-} catch {
-  $method = 'diskpart'
-  $log = (& diskpart.exe /s $script 2>&1 | Out-String)
-  $code = $LASTEXITCODE
-}
-"$method $code`r`n$log" | Set-Content -Path $out -Encoding utf8
-"#;
+/// Exit codes of [`compact_script`] when it succeeds (anything else is a failure code).
+const DONE_OPTIMIZE_VHD: i32 = 100;
+const DONE_DISKPART: i32 = 101;
 
-/// Parses the first line of the elevated script's report.
-fn parse_report(text: &str) -> Option<(String, i64, String)> {
-    let text = text.trim_start_matches('\u{FEFF}');
-    let (head, log) = text.split_once('\n').unwrap_or((text, ""));
-    let (method, code) = head.trim().split_once(' ')?;
-    if !matches!(method, "optimize-vhd" | "diskpart") {
-        return None;
+/// The elevated script, run in memory (`wsl::run_elevated_powershell`): `Optimize-VHD` when the
+/// Hyper-V module exists, else diskpart fed through **stdin** (no script file anywhere). The path
+/// was validated (`validate_vhdx_path`) and `'` is doubled for the single-quoted strings.
+pub fn compact_script(vhdx: &str) -> String {
+    let quote = |s: &str| s.replace('\'', "''");
+    format!(
+        r#"$vhdx = '{path}'
+try {{
+  if (-not (Get-Command Optimize-VHD -ErrorAction SilentlyContinue)) {{ throw 'sem Hyper-V' }}
+  Optimize-VHD -Path $vhdx -Mode Full -ErrorAction Stop
+  exit {DONE_OPTIMIZE_VHD}
+}} catch {{
+  $commands = '{commands}'
+  $commands | & "$env:SystemRoot\System32\diskpart.exe" | Out-Null
+  if ($LASTEXITCODE -eq 0) {{ exit {DONE_DISKPART} }}
+  exit $LASTEXITCODE
+}}
+"#,
+        path = quote(vhdx),
+        commands = quote(&diskpart_script(vhdx)),
+    )
+}
+
+/// `Ok(method)` for the success codes of [`compact_script`], the user-facing error otherwise.
+pub fn interpret_compact_exit(code: i32) -> Result<&'static str, String> {
+    match code {
+        DONE_OPTIMIZE_VHD => Ok("optimize-vhd"),
+        DONE_DISKPART => Ok("diskpart"),
+        crate::wsl::UAC_CANCELLED => Err(
+            "A permissão de administrador foi negada (ou a janela do UAC foi fechada). O disco não foi alterado; o WSL só foi desligado.".into(),
+        ),
+        c => Err(format!("A compactação falhou (código {c}). O arquivo pode estar em uso: feche o Docker Desktop e tente de novo.")),
     }
-    Some((method.to_string(), code.trim().parse().ok()?, log.trim().to_string()))
 }
 
 /// Clears the flag even when the compaction fails or panics.
@@ -164,44 +178,6 @@ async fn wait_vm_released() {
     tokio::time::sleep(Duration::from_secs(1)).await;
 }
 
-async fn run_elevated_compaction(vhdx: &str) -> Result<(String, i64, String), String> {
-    let dir = std::env::temp_dir().join(format!("wsl-symbiosis-vhdx-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let ps1 = dir.join("compact.ps1");
-    let script = dir.join("compact.txt");
-    let out = dir.join("result.txt");
-    let _ = std::fs::remove_file(&out);
-    std::fs::write(&ps1, COMPACT_PS1).map_err(|e| e.to_string())?;
-    std::fs::write(&script, diskpart_script(vhdx)).map_err(|e| e.to_string())?;
-
-    // Windows paths can't contain `"`; `'` is doubled for the PowerShell single-quoted string.
-    let inner = format!(
-        "-NoProfile -ExecutionPolicy Bypass -File \"{}\" \"{vhdx}\" \"{}\" \"{}\"",
-        ps1.display(),
-        script.display(),
-        out.display()
-    );
-    let command = format!(
-        "Start-Process powershell.exe -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '{}'",
-        inner.replace('\'', "''")
-    );
-    let mut cmd = hidden_command("powershell.exe");
-    cmd.args(["-NoProfile", "-NonInteractive", "-Command", &command]);
-    let output = tokio::time::timeout(COMPACT_TIMEOUT, cmd.output())
-        .await
-        .map_err(|_| "Tempo esgotado compactando o disco virtual".to_string())?
-        .map_err(|e| format!("Falha ao executar o PowerShell: {e}"))?;
-    let report = std::fs::read_to_string(&out).unwrap_or_default();
-    let _ = std::fs::remove_dir_all(&dir);
-    match parse_report(&report) {
-        Some(parsed) => Ok(parsed),
-        None if !output.status.success() || report.trim().is_empty() => Err(
-            "A permissão de administrador foi negada (ou a janela do UAC foi fechada). O disco não foi alterado; o WSL só foi desligado."
-                .into(),
-        ),
-        None => Err(format!("Resposta inesperada da compactação: {}", report.trim())),
-    }
-}
 
 pub(crate) async fn compact(app: &AppHandle, distro: &str) -> Result<VhdxCompactResult, String> {
     validate_distro_name(distro)?;
@@ -222,11 +198,8 @@ pub(crate) async fn compact(app: &AppHandle, distro: &str) -> Result<VhdxCompact
     crate::wsl::shutdown_all(app).await?;
     wait_vm_released().await;
 
-    let (method, code, log) = run_elevated_compaction(&before.path).await?;
-    if code != 0 {
-        let detail = if log.is_empty() { String::new() } else { format!("\n{log}") };
-        return Err(format!("O {method} falhou (código {code}). O arquivo pode estar em uso: feche o Docker Desktop e tente de novo.{detail}"));
-    }
+    let code = crate::wsl::run_elevated_powershell(&compact_script(&before.path), COMPACT_TIMEOUT).await?;
+    let method = interpret_compact_exit(code)?.to_string();
     let after = locate(distro)?;
     Ok(VhdxCompactResult {
         path: before.path,
@@ -299,14 +272,29 @@ mod tests {
     }
 
     #[test]
-    fn parses_elevated_report() {
-        assert_eq!(parse_report("\u{FEFF}optimize-vhd 0\r\n"), Some(("optimize-vhd".into(), 0, String::new())));
-        let (method, code, log) = parse_report("diskpart 0\r\nDiskPart concluiu a compactação.\r\n").unwrap();
-        assert_eq!((method.as_str(), code), ("diskpart", 0));
-        assert!(log.contains("compacta"));
-        assert_eq!(parse_report("diskpart -2147024864\r\nem uso").map(|r| r.1), Some(-2147024864));
-        assert_eq!(parse_report(""), None);
-        assert_eq!(parse_report("rm 0"), None);
+    fn elevated_script_stays_in_memory() {
+        // Security audit (0.1.3): nothing the elevated process runs may come from a file in %TEMP%.
+        let path = r"C:\Users\o'brien\AppData\Local\Packages\Canonical\LocalState\ext4.vhdx";
+        let script = compact_script(path);
+        assert!(script.contains(r"$vhdx = 'C:\Users\o''brien\AppData"), "quotes doubled for PowerShell");
+        assert!(script.contains(r#"select vdisk file="C:\Users\o''brien"#), "diskpart commands inline");
+        assert!(script.contains(r#"| & "$env:SystemRoot\System32\diskpart.exe""#), "diskpart by absolute path, fed by stdin");
+        for forbidden in ["/s ", "-File", "Set-Content", "Out-File", "TEMP", ".ps1", ".txt"] {
+            assert!(!script.contains(forbidden), "{forbidden} in the elevated script");
+        }
+        let launcher = crate::wsl::elevation_launcher(&script);
+        assert!(launcher.contains("-Verb RunAs") && launcher.contains("'-EncodedCommand'") && launcher.contains("exit $p.ExitCode"));
+        assert!(launcher.contains(r"System32\WindowsPowerShell\v1.0\powershell.exe'"), "absolute PowerShell path");
+        assert!(!launcher.contains(".ps1") && !launcher.contains("'-File'") && !launcher.contains("-File "));
+    }
+
+    #[test]
+    fn interprets_compaction_exit_codes() {
+        assert_eq!(interpret_compact_exit(DONE_OPTIMIZE_VHD), Ok("optimize-vhd"));
+        assert_eq!(interpret_compact_exit(DONE_DISKPART), Ok("diskpart"));
+        assert!(interpret_compact_exit(crate::wsl::UAC_CANCELLED).unwrap_err().contains("negada"));
+        assert!(interpret_compact_exit(0).unwrap_err().contains("código 0"), "0 is not a success code here");
+        assert!(interpret_compact_exit(-2147024864).unwrap_err().contains("em uso"));
     }
 
     /// Read-only: finds this machine's VHDX through the registry.

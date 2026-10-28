@@ -10,6 +10,7 @@ import {
   DirEntry,
   ToolId,
   createDirectory,
+  createEnvFromExample,
   createFile,
   deleteEntry,
   isNavigable,
@@ -153,6 +154,18 @@ export function ExplorerPane({
     }
     const target = joinPath(path, entryName);
     return act(() => (kind === "dir" ? createDirectory(distro, target) : createFile(distro, target)));
+  };
+
+  /** "+ Criar .env": copy the template, refresh the row, and open the new file to fill in. */
+  const createEnv = async (entry: DirEntry) => {
+    try {
+      const file = await createEnvFromExample(distro, entry.path);
+      ex.setError(null);
+      await ex.refresh();
+      setEditing(file);
+    } catch (err) {
+      ex.setError(errorMessage(err));
+    }
   };
 
   const projectsHere = (ex.listing?.entries ?? []).filter((e) => isProject(e.projectMarkers)).length;
@@ -314,6 +327,7 @@ export function ExplorerPane({
             onOpen={open}
             onTerminalHere={onTerminalHere}
             onChanged={() => ex.refresh()}
+            onCreateEnv={createEnv}
             selection={
               selected
                 ? { selectable: isRepo(entry), selected: selected.has(entry.path), onToggle: () => toggle(entry.path) }

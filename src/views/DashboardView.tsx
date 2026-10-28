@@ -1,6 +1,8 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, type ComponentProps, type ReactNode } from "react";
 import {
   Activity,
+  ArchiveRestore,
+  PackageOpen,
   CheckCircle2,
   Cpu,
   Eraser,
@@ -19,6 +21,8 @@ import {
 import type { Distro, DropCachesResult, GuestMetrics, HostMetrics, VhdxInfo, WslInfo, WslResourceMetrics } from "../lib/wsl";
 import { WslConfigDialog } from "../components/WslConfigDialog";
 import { CompactVhdxDialog, VHDX_EXPLAINED } from "../components/dashboard/CompactVhdxDialog";
+import { BackupDistroDialog } from "../components/dashboard/BackupDistroDialog";
+import { isSystemDistro } from "../lib/wsl";
 import { useActivityContext } from "../hooks/useActivity";
 import { isActive } from "../lib/projects";
 import { errorMessage, freeCachedMemory } from "../lib/wsl";
@@ -39,6 +43,8 @@ interface Props {
   telemetry: { metrics: WslResourceMetrics | null; error: string | null; refresh: () => Promise<void> };
   onSelect: (name: string) => void;
   onStart: () => void;
+  /** A backup was restored as a new distro: reload the list. */
+  onDistrosChanged: () => void;
 }
 
 function Stat({ label, value, icon: Icon }: { label: string; value: string; icon: typeof Cpu }) {
@@ -90,11 +96,11 @@ function CompactButton({ onClick }: { onClick: () => void }) {
     <button
       type="button"
       onClick={onClick}
-      title="Devolve ao Windows o espaço dos arquivos que você já apagou no Linux"
-      className={`${BTN_GHOST} -my-1 px-2 py-0.5 text-[11px]`}
+      title="Compactar o VHDX: devolve ao Windows o espaço dos arquivos que você já apagou no Linux"
+      className={`${BTN_GHOST} -my-1 shrink-0 px-2 py-0.5 text-[11px] whitespace-nowrap`}
     >
       <Minimize2 className="size-3" />
-      Compactar VHDX
+      Compactar
     </button>
   );
 }
@@ -193,8 +199,8 @@ function GuestMeters({ distro, guest, vhdx, onChanged, onCompact }: {
             type="button"
             onClick={dropCaches}
             disabled={dropping}
-            title="sync; echo 3 > /proc/sys/vm/drop_caches (vale para a VM inteira)"
-            className={`${BTN_GHOST} -my-1 px-2 py-0.5 text-[11px]`}
+            title="Devolve ao Windows a memória que o Linux usa como cache (vale para todas as distros)"
+            className={`${BTN_GHOST} -my-1 shrink-0 px-2 py-0.5 text-[11px] whitespace-nowrap`}
           >
             {dropping ? <Loader2 className="size-3 animate-spin" /> : <Eraser className="size-3" />}
             Liberar cache
@@ -219,13 +225,13 @@ function GuestMeters({ distro, guest, vhdx, onChanged, onCompact }: {
 
       <MeterCard
         icon={HardDrive}
-        title="Disco do Linux (VHDX)"
+        title="Disco do Linux"
         info={
           <>
             {VHDX_EXPLAINED}
             <span className="mt-2 block">
               A barra mostra o espaço que o Linux usa por dentro. <b className="font-semibold text-zinc-100">Recuperável</b> é quanto o
-              arquivo ocupa no Windows a mais do que isso: espaço de arquivos já apagados que o Compactar VHDX devolve.
+              arquivo ocupa no Windows a mais do que isso: espaço de arquivos já apagados que o botão Compactar devolve.
             </span>
           </>
         }
@@ -319,7 +325,7 @@ function GuestPlaceholder({ selected, pending, onStart, error, vhdx, onCompact }
   );
 }
 
-export function DashboardView({ distros, selected, info, pending, telemetry, onSelect, onStart }: Props) {
+export function DashboardView({ distros, selected, info, pending, telemetry, onSelect, onStart, onDistrosChanged }: Props) {
   const running = distros.filter((d) => d.state === "Running").length;
   const { metrics, error, refresh } = telemetry;
   const guest = metrics?.guest ?? null;
@@ -331,6 +337,8 @@ export function DashboardView({ distros, selected, info, pending, telemetry, onS
   const openCompact = () =>
     selected && vhdx && setCompacting({ distro: selected.name, vhdx, linuxUsed: guest?.disk?.used ?? null });
   const runningProjects = tasks.filter((t) => t.kind === "run" && isActive(t)).length;
+  // Kept in state (a stable object): the dialog reads it once.
+  const [backup, setBackup] = useState<ComponentProps<typeof BackupDistroDialog>["mode"] | null>(null);
 
   return (
     <div className="space-y-7 p-6">
@@ -405,6 +413,14 @@ export function DashboardView({ distros, selected, info, pending, telemetry, onS
           }}
         />
       )}
+      {backup && (
+        <BackupDistroDialog
+          mode={backup}
+          distros={distros.map((d) => d.name)}
+          onClose={() => setBackup(null)}
+          onImported={onDistrosChanged}
+        />
+      )}
       {compacting && (
         <CompactVhdxDialog
           distro={compacting.distro}
@@ -421,7 +437,21 @@ export function DashboardView({ distros, selected, info, pending, telemetry, onS
       )}
 
       <section className="overflow-hidden rounded-lg border border-zinc-800 bg-zinc-900">
-        <div className={`border-b border-zinc-800 px-4 py-2.5 ${LABEL}`}>Distribuições</div>
+        <div className="flex items-center gap-2 border-b border-zinc-800 px-4 py-2">
+          <span className={LABEL}>Distribuições</span>
+          <InfoTip>
+            Cada distro é um Linux separado. O backup salva uma distro inteira em um arquivo .tar no Windows; importar cria uma distro a
+            partir desse arquivo (inclusive com outro nome, como cópia).
+          </InfoTip>
+          <button
+            type="button"
+            onClick={() => setBackup({ kind: "import" })}
+            className={`${BTN_GHOST} ml-auto -my-0.5 px-2.5 py-0.5 text-[11px]`}
+          >
+            <ArchiveRestore className="size-3" />
+            Importar backup
+          </button>
+        </div>
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-zinc-800 text-left text-[10px] tracking-wider text-zinc-600 uppercase">
@@ -429,6 +459,7 @@ export function DashboardView({ distros, selected, info, pending, telemetry, onS
               <th className="px-4 py-2 font-medium">Estado</th>
               <th className="px-4 py-2 font-medium">Versão</th>
               <th className="px-4 py-2 font-medium">Padrão</th>
+              <th className="px-4 py-2 font-medium" />
             </tr>
           </thead>
           <tbody>
@@ -438,7 +469,7 @@ export function DashboardView({ distros, selected, info, pending, telemetry, onS
                 <tr
                   key={d.name}
                   onClick={() => onSelect(d.name)}
-                  className={`relative cursor-pointer border-b border-zinc-800/70 transition-colors last:border-0 ${
+                  className={`group relative cursor-pointer border-b border-zinc-800/70 transition-colors last:border-0 ${
                     active ? "bg-zinc-800/50" : "hover:bg-zinc-800/30"
                   }`}
                 >
@@ -458,12 +489,32 @@ export function DashboardView({ distros, selected, info, pending, telemetry, onS
                   <td className="px-4 py-2.5">
                     {d.isDefault && <Star className="size-3.5 fill-zinc-300 text-zinc-300" />}
                   </td>
+                  <td className="px-4 py-1.5 text-right">
+                    {!isSystemDistro(d.name) && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setBackup({
+                            kind: "export",
+                            distro: d.name,
+                            estimate: d.name === selected?.name ? (guest?.disk?.used ?? null) : null,
+                          });
+                        }}
+                        title="Salva uma cópia completa desta distro em um arquivo .tar no Windows"
+                        className={`${BTN_GHOST} px-2 py-0.5 text-[11px] opacity-60 transition-opacity group-hover:opacity-100 hover:opacity-100`}
+                      >
+                        <PackageOpen className="size-3" />
+                        Fazer backup (.tar)
+                      </button>
+                    )}
+                  </td>
                 </tr>
               );
             })}
             {distros.length === 0 && (
               <tr>
-                <td colSpan={4} className="px-4 py-8 text-center text-zinc-500">
+                <td colSpan={5} className="px-4 py-8 text-center text-zinc-500">
                   Nenhuma distro encontrada.
                 </td>
               </tr>

@@ -16,10 +16,11 @@ use tauri::{AppHandle, Emitter, State};
 
 /// Where task updates go: the `project-task` event in the app, a no-op/collector in tests.
 pub type TaskSink = Arc<dyn Fn(&TaskInfo) + Send + Sync>;
-use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
+use tokio::io::{AsyncRead, BufReader};
 use tokio::sync::oneshot;
 
 use crate::explorer::normalize_linux_path;
+use crate::lines::{BoundedLines, MAX_LOG_LINE_BYTES};
 use crate::packages::{strip_ansi, user_shell_command};
 use crate::wsl::{ensure_running, run, sh_in_distro, validate_distro_name};
 
@@ -274,10 +275,36 @@ fn push_log(task: &Task, line: String) {
     log.push_back(line);
 }
 
+const MAX_EARLY_LINES: usize = 200;
+const MAX_EARLY_BYTES: usize = 64 * 1024;
+
+/// rc-file noise printed before `@@pid`, kept only to explain a shell that died early. Bounded in
+/// lines and bytes; the last lines are the ones kept (that's where the error is).
+#[derive(Default)]
+struct EarlyLog {
+    lines: VecDeque<String>,
+    bytes: usize,
+}
+
+impl EarlyLog {
+    fn push(&mut self, line: String) {
+        self.bytes += line.len();
+        self.lines.push_back(line);
+        while self.lines.len() > MAX_EARLY_LINES || self.bytes > MAX_EARLY_BYTES {
+            match self.lines.pop_front() {
+                Some(old) => self.bytes -= old.len(),
+                None => break,
+            }
+        }
+    }
+}
+
 /// Reads one output stream into the task log. Lines before `@@pid` are rc-file noise, kept
 /// aside and only shown if the shell dies before reaching the project (e.g. `cd` failed).
-async fn pump(sink: TaskSink, task: Arc<Task>, stream: impl AsyncRead + Unpin, early: Arc<Mutex<Vec<String>>>) {
-    let mut lines = BufReader::new(stream).lines();
+/// Each line is capped (`lines::BoundedLines`): a dev server printing megabytes without a
+/// newline can't grow the app's memory.
+async fn pump(sink: TaskSink, task: Arc<Task>, stream: impl AsyncRead + Unpin, early: Arc<Mutex<EarlyLog>>) {
+    let mut lines = BoundedLines::new(BufReader::new(stream), MAX_LOG_LINE_BYTES);
     while let Ok(Some(raw)) = lines.next_line().await {
         let line = strip_ansi(&raw);
         if let Some(pid) = line.trim().strip_prefix("@@pid ") {
@@ -393,7 +420,7 @@ impl ProjectRunner {
         push_log(&task, format!("$ {}", argv.join(" ")));
         self.tasks.lock().unwrap().insert(id, Arc::clone(&task));
 
-        let early = Arc::new(Mutex::new(Vec::new()));
+        let early = Arc::new(Mutex::new(EarlyLog::default()));
         let readers = [
             child.stdout.take().map(|s| tauri::async_runtime::spawn(pump(Arc::clone(&sink), Arc::clone(&task), s, Arc::clone(&early)))),
             child.stderr.take().map(|s| tauri::async_runtime::spawn(pump(Arc::clone(&sink), Arc::clone(&task), s, Arc::clone(&early)))),
@@ -417,7 +444,7 @@ impl ProjectRunner {
                 let mut info = waiter_task.info.lock().unwrap();
                 if info.pid.is_none() {
                     // Died before reaching the project: show what the shell said.
-                    for line in early.lock().unwrap().drain(..) {
+                    for line in early.lock().unwrap().lines.drain(..) {
                         push_log(&waiter_task, line);
                     }
                 }
@@ -592,6 +619,22 @@ pub async fn stop_process_tree(distro: String, pid: u32) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::AsyncBufReadExt;
+
+    #[test]
+    fn early_log_is_bounded() {
+        let mut early = EarlyLog::default();
+        for i in 0..1000 {
+            early.push(format!("ruído {i}"));
+        }
+        assert_eq!(early.lines.len(), MAX_EARLY_LINES);
+        assert_eq!(early.lines.back().map(String::as_str), Some("ruído 999"), "the last lines are kept");
+        let mut big = EarlyLog::default();
+        for _ in 0..20 {
+            big.push("x".repeat(MAX_LOG_LINE_BYTES));
+        }
+        assert!(big.bytes <= MAX_EARLY_BYTES && big.bytes == big.lines.iter().map(String::len).sum::<usize>());
+    }
 
     #[test]
     fn inspects_package_json() {

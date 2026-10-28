@@ -90,9 +90,11 @@ pub fn validate_clone_url(url: &str) -> Result<(), String> {
     if url.is_empty() || url.len() > 2048 || url.starts_with('-') || url.chars().any(|c| c.is_control() || c.is_whitespace()) {
         return invalid();
     }
+    // Compared as bytes: `&url[..n]` panics (and `panic = "abort"` kills the app) when byte n
+    // falls inside a multi-byte character, e.g. `httpséx://`.
     let with_scheme = ["https://", "http://", "ssh://", "git://"]
         .iter()
-        .any(|s| url.len() > s.len() && url[..s.len()].eq_ignore_ascii_case(s));
+        .any(|s| url.len() > s.len() && url.as_bytes()[..s.len()].eq_ignore_ascii_case(s.as_bytes()));
     let scp_like = match url.split_once(':') {
         Some((user_host, repo)) => {
             let (user, host) = user_host.split_once('@').unwrap_or(("", user_host));
@@ -476,6 +478,32 @@ mod tests {
         for bad in ["", "-f", "--orphan", "a..b", "a b", "x~1", "x^", "a:b", "@", "x@{u}", "/x", "x/", "x.lock", "a/.hidden", "a\nb", "a\\b"] {
             assert!(validate_branch_name(bad).is_err(), "{bad:?}");
         }
+    }
+
+    /// Security audit (0.1.3): multi-byte characters right at every scheme's cut position must be
+    /// rejected, never panic.
+    #[test]
+    fn clone_url_validation_never_panics_on_utf8() {
+        let schemes = ["http://", "https://", "ssh://", "git://", "file://", "ext::"];
+        let tricky = ["é", "ã", "ç", "😀", "€", "\u{301}"];
+        for scheme in schemes {
+            for ch in tricky {
+                for cut in 0..=scheme.len() {
+                    // The multi-byte char starts at every byte position up to the scheme's length.
+                    let url = format!("{}{ch}{}", &scheme[..cut], "host/repo");
+                    let _ = validate_clone_url(&url);
+                    let _ = repo_name_from_url(&url);
+                    // ...and with ASCII padding so the length check passes first.
+                    let padded = format!("{ch}{scheme}github.com/a/b");
+                    assert!(validate_clone_url(&padded).is_err(), "{padded}");
+                }
+            }
+        }
+        // 7 ASCII letters followed by `é`: the original crash (byte 7 is inside `é`).
+        assert!(validate_clone_url("abcdefgé/repo").is_err());
+        assert!(validate_clone_url("httpséx://github.com/a/b").is_err());
+        assert!(validate_clone_url("https://github.com/organização/repositório.git").is_ok());
+        assert_eq!(repo_name_from_url("https://github.com/org/repositório.git").as_deref(), Some("repositório"));
     }
 
     #[test]
