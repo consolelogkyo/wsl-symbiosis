@@ -5,11 +5,13 @@ import { BrandIcon } from "../BrandIcon";
 import { NvmInfo, shortenHome, switchNvmDefault } from "../../lib/packages";
 import { errorMessage } from "../../lib/wsl";
 import { CARD } from "../../lib/ui";
+import { useProgressContext } from "../../hooks/useProgress";
 
 interface Props {
   distro: string;
   nvm: NvmInfo;
-  onChanged: () => void;
+  /** Re-scans the environment (the packages of the new Node). */
+  onChanged: () => Promise<void> | void;
 }
 
 export function NvmCard({ distro, nvm, onChanged }: Props) {
@@ -18,6 +20,7 @@ export function NvmCard({ distro, nvm, onChanged }: Props) {
   // takes a few seconds in the login shell, and waiting for it made the switch feel laggy.
   const [confirmed, setConfirmed] = useState<string | null>(null);
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
+  const { track } = useProgressContext();
 
   // A fresh scan arrived: it is the source of truth again.
   useEffect(() => setConfirmed(null), [nvm]);
@@ -27,10 +30,15 @@ export function NvmCard({ distro, nvm, onChanged }: Props) {
     setBusy(version);
     setMessage(null);
     try {
-      const out = await switchNvmDefault(distro, version);
-      setConfirmed(version);
-      setMessage({ ok: true, text: out || `default → ${version}` });
-      onChanged();
+      // Two measured stages: the switch itself, then re-reading what the new Node has installed.
+      await track(`Trocando para o Node ${version}`, async (update) => {
+        update({ detail: "Definindo a versão padrão (nvm alias default)", percent: 0 });
+        const out = await switchNvmDefault(distro, version);
+        setConfirmed(version);
+        setMessage({ ok: true, text: out || `default → ${version}` });
+        update({ detail: "Lendo os pacotes e ferramentas da nova versão", percent: 50 });
+        await onChanged();
+      });
     } catch (err) {
       setMessage({ ok: false, text: errorMessage(err) });
     } finally {

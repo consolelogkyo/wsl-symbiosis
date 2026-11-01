@@ -24,8 +24,8 @@ export function Sidebar({ view, onNavigate, selected, metrics, onOpenSettings }:
     <aside className="flex w-56 shrink-0 flex-col border-r border-[#18181e] bg-void">
       <nav className="min-h-0 flex-1 space-y-px overflow-y-auto px-2 pt-4">
         <div className="mb-2 px-2.5 text-[11px] font-medium tracking-wider text-zinc-600 uppercase">Módulos</div>
-        {NAV_ITEMS.map((item) => (
-          <NavButton key={item.id} item={item} active={item.id === view} onNavigate={onNavigate} />
+        {NAV_ITEMS.map((item, i) => (
+          <NavButton key={item.id} item={item} shortcut={`Ctrl+${i + 1}`} active={item.id === view} onNavigate={onNavigate} />
         ))}
       </nav>
 
@@ -47,11 +47,12 @@ export function Sidebar({ view, onNavigate, selected, metrics, onOpenSettings }:
   );
 }
 
-function NavButton({ item, active, onNavigate }: { item: NavItem; active: boolean; onNavigate: (view: ViewId) => void }) {
+function NavButton({ item, shortcut, active, onNavigate }: { item: NavItem; shortcut: string; active: boolean; onNavigate: (view: ViewId) => void }) {
   const { id, label, icon: Icon } = item;
   return (
     <button
       type="button"
+      title={`${label} (${shortcut})`}
       onClick={() => onNavigate(id)}
       aria-current={active ? "page" : undefined}
       className={`group relative flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-[13px] transition-colors ${

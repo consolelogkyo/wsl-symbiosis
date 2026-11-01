@@ -190,11 +190,44 @@ pub(crate) async fn read_capped(mut reader: impl tokio::io::AsyncRead + Unpin, c
 
 /// Like [`run`], but returns stdout bytes untouched (file contents) and optionally
 /// feeds `stdin` to the process. Output is capped at [`MAX_OUTPUT_BYTES`] per stream.
-pub(crate) async fn run_raw(
+pub(crate) async fn run_raw(cmd: Command, timeout: Duration, stdin: Option<&[u8]>) -> Result<Vec<u8>, String> {
+    let out = run_capture(cmd, timeout, stdin, "wsl.exe").await?;
+    if out.success() {
+        Ok(out.stdout)
+    } else {
+        Err(out.error_text())
+    }
+}
+
+/// Everything a finished process left: exit code and both streams (each capped at
+/// [`MAX_OUTPUT_BYTES`]).
+pub(crate) struct Captured {
+    pub code: Option<i32>,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+}
+
+impl Captured {
+    pub fn success(&self) -> bool {
+        self.code == Some(0)
+    }
+
+    /// stderr, or stdout when stderr is empty (some tools report errors there).
+    pub fn error_text(&self) -> String {
+        let stderr = decode_output(&self.stderr);
+        let msg = if stderr.trim().is_empty() { decode_output(&self.stdout) } else { stderr };
+        msg.trim().to_string()
+    }
+}
+
+/// Runs `cmd` to completion with a timeout, feeding `stdin` while both outputs are read.
+/// `what` names the program in the timeout/spawn error messages.
+pub(crate) async fn run_capture(
     mut cmd: Command,
     timeout: Duration,
     stdin: Option<&[u8]>,
-) -> Result<Vec<u8>, String> {
+    what: &str,
+) -> Result<Captured, String> {
     let task = async {
         if stdin.is_some() {
             cmd.stdin(Stdio::piped());
@@ -229,16 +262,9 @@ pub(crate) async fn run_raw(
     };
     let (status, stdout, stderr) = tokio::time::timeout(timeout, task)
         .await
-        .map_err(|_| "Tempo esgotado aguardando o wsl.exe".to_string())?
-        .map_err(|e| format!("Falha ao executar wsl.exe: {e}"))?;
-
-    if status.success() {
-        Ok(stdout)
-    } else {
-        let stderr = decode_output(&stderr);
-        let msg = if stderr.trim().is_empty() { decode_output(&stdout) } else { stderr };
-        Err(msg.trim().to_string())
-    }
+        .map_err(|_| format!("Tempo esgotado aguardando o {what}"))?
+        .map_err(|e| format!("Falha ao executar {what}: {e}"))?;
+    Ok(Captured { code: status.code(), stdout, stderr })
 }
 
 fn parse_state(label: &str) -> DistroState {
@@ -391,6 +417,11 @@ pub(crate) async fn shutdown_all(app: &tauri::AppHandle) -> Result<(), String> {
     app.state::<crate::terminal::TerminalManager>().close_all();
     // Running projects die with the VM: report them as stopped, not as failures.
     app.state::<crate::projects::ProjectRunner>().mark_all_stopping();
+    // Docker Desktop lives in this VM too: pulling it out from under it leaves Docker Desktop
+    // broken until its stale sockets are removed by hand. Stop it the clean way first.
+    if let Err(e) = crate::docker::stop_desktop_if_running().await {
+        eprintln!("docker desktop stop: {e}");
+    }
     let result = shutdown(&app.state::<KeepAlive>()).await;
     let _ = app.emit("wsl-changed", ());
     result

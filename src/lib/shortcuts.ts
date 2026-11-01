@@ -52,6 +52,20 @@ export const SHORTCUT_DEFS: ShortcutDef[] = SHORTCUT_GROUPS.flatMap((g) => g.ite
 /** Built-in shortcuts, listed for reference (not configurable). */
 export const FIXED_SHORTCUTS: { title: string; items: { label: string; binding: string }[] }[] = [
   {
+    title: "Navegação",
+    items: [
+      { label: "Dashboard & Recursos", binding: "Ctrl+1" },
+      { label: "Explorador & Projetos", binding: "Ctrl+2" },
+      { label: "Pacotes & Ambiente", binding: "Ctrl+3" },
+      { label: "Terminal", binding: "Ctrl+4" },
+      { label: "Bancos & Containers", binding: "Ctrl+5" },
+    ],
+  },
+  {
+    title: "Editor SQL (Bancos & Containers)",
+    items: [{ label: "Executar", binding: "Ctrl+Enter" }],
+  },
+  {
     title: "Editor de arquivos",
     items: [
       { label: "Salvar", binding: "Ctrl+S" },
@@ -103,7 +117,23 @@ export function keyFromEvent(e: KeyboardEvent): string | null {
 export const matchesKey = (e: KeyboardEvent, binding: string) => binding !== "" && keyFromEvent(e) === binding;
 
 /** Combos the app or the system already uses: recording them is refused. */
-const RESERVED = new Set(["Ctrl+C", "Ctrl+V", "Ctrl+X", "Ctrl+A", "Ctrl+Z", "Ctrl+Y", "Ctrl+S", "Alt+F4", "Alt+Tab"]);
+const RESERVED = new Set([
+  "Ctrl+C",
+  "Ctrl+V",
+  "Ctrl+X",
+  "Ctrl+A",
+  "Ctrl+Z",
+  "Ctrl+Y",
+  "Ctrl+S",
+  "Alt+F4",
+  "Alt+Tab",
+  // Module navigation (Sidebar order).
+  "Ctrl+1",
+  "Ctrl+2",
+  "Ctrl+3",
+  "Ctrl+4",
+  "Ctrl+5",
+]);
 
 /** Why a recorded combo can't be used, or null when it can. */
 export function invalidKeyBinding(binding: string): string | null {

@@ -8,6 +8,7 @@ import { NvmCard } from "../components/packages/NvmCard";
 import { NpmGlobals } from "../components/packages/NpmGlobals";
 import { PortsTable } from "../components/packages/PortsTable";
 import { BANNER_ERROR, BTN_GHOST, BTN_PRIMARY } from "../lib/ui";
+import { ProgressBar } from "../components/ProgressBar";
 
 type Tab = "runtimes" | "npm" | "ports";
 
@@ -92,7 +93,7 @@ export function PackagesView({ distro, pending, onStart }: Props) {
           )}
           <button
             type="button"
-            onClick={env.refresh}
+            onClick={() => void env.refresh()}
             disabled={env.scanning}
             className={`${BTN_GHOST} whitespace-nowrap`}
           >
@@ -109,7 +110,13 @@ export function PackagesView({ distro, pending, onStart }: Props) {
         </div>
       )}
 
-      <div className="min-h-0 flex-1 overflow-auto p-6">
+      {/* Re-scanning over a previous result (Node switched, Atualizar): the old data stays,
+          dimmed, under a moving bar, and comes back to full opacity when the new scan lands. */}
+      <div className="h-0.5 shrink-0">{env.updating && scan && <ProgressBar percent={null} className="h-0.5" />}</div>
+      <div
+        className={`min-h-0 flex-1 overflow-auto p-6 transition-opacity duration-300 ${env.updating && scan ? "anim-stale pointer-events-none" : ""}`}
+        aria-busy={env.scanning}
+      >
         {!scan ? (
           <div className="flex h-40 flex-col items-center justify-center gap-2 text-xs text-zinc-500">
             <Loader2 className="size-5 animate-spin text-zinc-600" />

@@ -1,4 +1,6 @@
 mod backup;
+mod database;
+mod docker;
 mod explorer;
 mod git;
 mod lines;
@@ -49,6 +51,7 @@ pub fn run() {
         .manage(projects::ProjectRunner::default())
         .manage(provisioner::ProvisionLock::default())
         .manage(tray::TrayState::default())
+        .manage(docker::DockerManager::default())
         .invoke_handler(tauri::generate_handler![
             wsl::list_distros,
             wsl::get_wsl_info,
@@ -91,6 +94,7 @@ pub fn run() {
             projects::stop_project,
             projects::list_project_tasks,
             projects::get_project_log,
+            projects::get_project_log_tail,
             projects::dismiss_project_task,
             projects::stop_process_tree,
             updater::prepare_for_update,
@@ -101,6 +105,7 @@ pub fn run() {
             provisioner::should_open_setup,
             provisioner::run_provisioning_tasks,
             settings::set_close_behavior,
+            settings::set_reduce_motion,
             tray::hide_to_tray,
             tray::quit_application,
             tray::set_tray_context,
@@ -116,6 +121,23 @@ pub fn run() {
             backup::export_distro_backup,
             backup::import_distro_backup,
             backup::get_backup_defaults,
+            docker::get_docker_status,
+            docker::start_docker_engine,
+            docker::stop_docker_engine,
+            docker::list_containers,
+            docker::start_container,
+            docker::stop_container,
+            docker::restart_container,
+            docker::remove_container,
+            docker::get_container_logs,
+            docker::get_database_defaults,
+            docker::create_database_container,
+            database::db_list_tables,
+            database::db_query_table,
+            database::db_create_table,
+            database::db_insert_row,
+            database::db_delete_row,
+            database::db_execute_sql,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

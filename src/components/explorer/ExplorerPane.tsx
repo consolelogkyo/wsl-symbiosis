@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, CloudDownload, FolderGit2, FolderOpen, Loader2, X } from "lucide-react";
 import { CloneDialog } from "./CloneDialog";
 import { useActivityContext } from "../../hooks/useActivity";
+import { useProgressContext } from "../../hooks/useProgress";
 import { useExplorer } from "../../hooks/useExplorer";
 import { useTools } from "../../hooks/useTools";
 import { isActive } from "../../lib/projects";
@@ -25,7 +26,7 @@ import { useGitQueueContext } from "../../hooks/useGitQueue";
 import { ExplorerToolbar } from "./ExplorerToolbar";
 import { EntryRow, NewEntryRow } from "./EntryRow";
 import { OpenInButtons } from "./OpenInButtons";
-import { isProject } from "./ProjectBadges";
+import { HEAVY_FOLDERS, isProject } from "./ProjectBadges";
 import { FileEditor } from "./FileEditor";
 
 interface Props {
@@ -110,6 +111,17 @@ export function ExplorerPane({
   }, [ex.listing, filter]);
 
   /** Runs an operation; on success refreshes, on failure shows the banner. */
+  // Heavy folders (node_modules, target) take a while to delete: shown in the progress panel.
+  const { track } = useProgressContext();
+  const removeEntry = (target: string) => {
+    const name = target.split("/").pop() ?? target;
+    if (!(HEAVY_FOLDERS as readonly string[]).includes(name)) return deleteEntry(distro, target);
+    const project = parentPath(target)?.split("/").pop() ?? "";
+    return track(`Removendo ${name} · ${project}`, () => deleteEntry(distro, target), {
+      detail: "Apagando milhares de arquivos pequenos: pode levar alguns segundos",
+    });
+  };
+
   const act = async (task: () => Promise<void>): Promise<boolean> => {
     try {
       await task();
@@ -312,6 +324,8 @@ export function ExplorerPane({
             <Loader2 className="size-5 animate-spin text-zinc-600" />
           </div>
         )}
+        {/* A new folder fades in (keyed by path: refreshing the same folder doesn't re-animate). */}
+        <div key={ex.listing?.path ?? ""} className="anim-fade-in">
         {entries.map((entry) => (
           <EntryRow
             key={entry.path}
@@ -323,7 +337,7 @@ export function ExplorerPane({
             newTabClick={newTabClick}
             onOpenInNewTab={onOpenInNewTab}
             onRename={rename}
-            onDelete={(target) => act(() => deleteEntry(distro, target))}
+            onDelete={(target) => act(() => removeEntry(target))}
             onOpen={open}
             onTerminalHere={onTerminalHere}
             onChanged={() => ex.refresh()}
@@ -335,6 +349,7 @@ export function ExplorerPane({
             }
           />
         ))}
+        </div>
         {ex.listing && entries.length === 0 && (
           <div className="px-4 py-10 text-center text-xs text-zinc-500">
             {filter ? `Nada corresponde a "${filter}".` : "Pasta vazia."}

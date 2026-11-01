@@ -66,7 +66,7 @@ export function InfoTip({ children, align = "left" }: { children: ReactNode; ali
             ref={tip}
             role="tooltip"
             style={{ left: pos?.left ?? 0, top: pos?.top ?? 0, visibility: pos ? "visible" : "hidden" }}
-            className="pointer-events-none fixed z-[100] block w-72 rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-[11px] leading-relaxed font-normal tracking-normal text-zinc-300 normal-case shadow-xl shadow-black/60"
+            className="pointer-events-none fixed z-[100] block w-72 rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-[11px] leading-relaxed font-normal tracking-normal text-zinc-300 normal-case [overflow-wrap:anywhere] shadow-xl shadow-black/60"
           >
             {children}
           </span>,

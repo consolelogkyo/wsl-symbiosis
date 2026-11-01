@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use serde::Serialize;
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 
 use crate::wsl::{run, sh_in_distro, validate_distro_name};
 
@@ -188,16 +188,24 @@ pub(crate) async fn compact(app: &AppHandle, distro: &str) -> Result<VhdxCompact
 
     let before = locate(distro)?;
     validate_vhdx_path(&before.path)?;
+    // Stages for the dialog's bar (index of 4): the elevated compaction reports nothing until it ends.
+    let stage = |index: u8, label: &str| {
+        let _ = app.emit("vhdx-progress", serde_json::json!({ "step": index, "steps": 4, "label": label }));
+    };
 
+    stage(0, "Avisando o Linux de quais espaços ficaram livres (fstrim)");
     // TRIM first: ext4 tells the virtual disk which blocks it freed, otherwise there is little
     // to reclaim. Best effort (busybox distros may lack fstrim); boots a stopped distro, which is
     // fine here: the user asked for this and the shutdown below follows.
     let trim = sh_in_distro(distro, Some("root"), "fstrim / >/dev/null 2>&1", &[]);
     let trimmed = run(trim, TRIM_TIMEOUT).await.is_ok();
 
+    stage(1, "Desligando o WSL");
     crate::wsl::shutdown_all(app).await?;
+    stage(2, "Esperando o Windows liberar o disco");
     wait_vm_released().await;
 
+    stage(3, "Compactando (confirme o pedido de administrador, se aparecer)");
     let code = crate::wsl::run_elevated_powershell(&compact_script(&before.path), COMPACT_TIMEOUT).await?;
     let method = interpret_compact_exit(code)?.to_string();
     let after = locate(distro)?;

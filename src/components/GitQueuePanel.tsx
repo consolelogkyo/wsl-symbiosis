@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Check, ChevronDown, ChevronUp, Clock, CloudDownload, Loader2, Minus, RotateCcw, X } from "lucide-react";
 import { type PullItem, useGitQueueContext } from "../hooks/useGitQueue";
 import { formatStat } from "../lib/git";
+import { ProgressBar } from "./ProgressBar";
 
 /** Progress of the git pull queue: one line per repository, in queue order. */
 export function GitQueuePanel() {
@@ -16,7 +17,7 @@ export function GitQueuePanel() {
   const retryable = items.some((i) => i.status === "failed" || i.status === "cancelled");
 
   return (
-    <div className="pointer-events-auto flex max-h-[60vh] flex-col overflow-hidden rounded-lg border border-zinc-700 bg-zinc-900 shadow-2xl shadow-black/70">
+    <div className="anim-rise pointer-events-auto flex max-h-[60vh] flex-col overflow-hidden rounded-lg border border-zinc-700 bg-zinc-900 shadow-2xl shadow-black/70">
       <div className="flex shrink-0 items-center gap-2 px-3 py-2.5">
         {running ? <Loader2 className="size-3.5 shrink-0 animate-spin text-zinc-300" /> : <CloudDownload className="size-3.5 shrink-0 text-zinc-300" />}
         <span className="min-w-0 flex-1 truncate text-sm font-semibold text-zinc-100">
@@ -39,8 +40,8 @@ export function GitQueuePanel() {
           </button>
         )}
       </div>
-      <div className="h-0.5 shrink-0 bg-zinc-800">
-        <div className="h-full bg-zinc-100 transition-[width]" style={{ width: `${(done / items.length) * 100}%` }} />
+      <div className="shrink-0 px-3 pb-2.5">
+        <ProgressBar percent={(done / items.length) * 100} className="h-1.5" />
       </div>
 
       {!collapsed && (

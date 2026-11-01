@@ -8,7 +8,10 @@ import { BTN_GHOST, BTN_PRIMARY, FIELD, INPUT } from "../../lib/ui";
 import { errorMessage } from "../../lib/wsl";
 import {
   type BackupDefaults,
+  type BackupProgress,
   backupFileName,
+  backupPercent,
+  onBackupProgress,
   distroNameError,
   exportDistroBackup,
   formatDuration,
@@ -16,6 +19,7 @@ import {
   importDistroBackup,
 } from "../../lib/backup";
 import { InfoTip } from "../InfoTip";
+import { ProgressBar } from "../ProgressBar";
 
 type Mode = { kind: "export"; distro: string; estimate: number | null } | { kind: "import" };
 
@@ -42,6 +46,7 @@ export function BackupDistroDialog({ mode, distros, onClose, onImported }: Props
   const [name, setName] = useState("");
   const [installDir, setInstallDir] = useState<string | null>(null);
   const running = phase.step === "running";
+  const [written, setWritten] = useState<BackupProgress | null>(null);
 
   useEffect(() => {
     getBackupDefaults()
@@ -52,12 +57,23 @@ export function BackupDistroDialog({ mode, distros, onClose, onImported }: Props
       .catch(() => {});
   }, [mode]);
 
-  // Elapsed time while wsl.exe works (it reports no usable progress).
+  // Elapsed time + the size of the file wsl.exe is writing (it reports nothing itself).
   useEffect(() => {
     if (!running) return;
+    setWritten(null);
     const id = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(id);
+    let unlisten: (() => void) | undefined;
+    let gone = false;
+    onBackupProgress(setWritten).then((u) => (gone ? u() : (unlisten = u)));
+    return () => {
+      gone = true;
+      window.clearInterval(id);
+      unlisten?.();
+    };
   }, [running]);
+  // Export: the .tar ends up about the size of what the distro uses.
+  const total = written?.total ?? (mode.kind === "export" ? mode.estimate : null);
+  const percent = written ? backupPercent(written.bytes, total) : null;
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -237,7 +253,19 @@ export function BackupDistroDialog({ mode, distros, onClose, onImported }: Props
             <div className="flex flex-col items-center gap-3 py-6 text-center">
               <Loader2 className="size-6 animate-spin text-zinc-300" />
               <p className="text-sm font-medium text-zinc-100">{mode.kind === "export" ? "Salvando o backup…" : "Restaurando o backup…"}</p>
-              <p className="font-mono text-xs text-zinc-500 tabular-nums">{formatDuration((now - phase.startedAt) / 1000)}</p>
+              <div className="w-full max-w-sm space-y-1.5">
+                <ProgressBar percent={percent} className="h-2" />
+                <div className="flex justify-between font-mono text-[11px] text-zinc-500 tabular-nums">
+                  <span>
+                    {written ? formatBytes(written.bytes) : "…"}
+                    {total ? ` de ~${formatBytes(total)}` : ""}
+                  </span>
+                  <span>
+                    {percent !== null ? `${Math.round(percent)}% · ` : ""}
+                    {formatDuration((now - phase.startedAt) / 1000)}
+                  </span>
+                </div>
+              </div>
               <p className="max-w-sm text-xs leading-relaxed text-zinc-500">Em distros grandes isso leva vários minutos. Não feche o app.</p>
             </div>
           )}

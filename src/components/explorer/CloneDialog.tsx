@@ -4,6 +4,7 @@ import { gitClone, isCloneUrl, repoNameFromUrl, splitGitError } from "../../lib/
 import { shortenHome } from "../../lib/packages";
 import { errorMessage } from "../../lib/wsl";
 import { useActivityContext } from "../../hooks/useActivity";
+import { useProgressContext } from "../../hooks/useProgress";
 import { BTN_GHOST, BTN_PRIMARY, FIELD, INPUT } from "../../lib/ui";
 
 interface Props {
@@ -24,6 +25,7 @@ export function CloneDialog({ distro, parent, existing, onClose, onCloned }: Pro
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<{ title: string; detail: string } | null>(null);
   const { notify } = useActivityContext();
+  const { track } = useProgressContext();
   const background = useRef(false);
 
   const derived = repoNameFromUrl(url);
@@ -43,7 +45,10 @@ export function CloneDialog({ distro, parent, existing, onClose, onCloned }: Pro
     setBusy(true);
     setError(null);
     try {
-      const result = await gitClone(distro, parent, url.trim(), name.trim() || null);
+      // In the progress panel too: it keeps showing after "Continuar em segundo plano".
+      const result = await track(`Clonando ${folder}`, () => gitClone(distro, parent, url.trim(), name.trim() || null), {
+        detail: url.trim(),
+      });
       onCloned(result.path);
       if (background.current) {
         notify({ tone: "success", title: `${result.name} clonado`, detail: shortenHome(result.path) + (result.viaSsh ? " · via SSH" : "") });

@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
+use tauri::{AppHandle, Emitter};
 
 use crate::provisioner::{is_system_distro, set_wsl_conf_default_user};
 use crate::wsl::{list_distros, run, run_raw, sh_in_distro, validate_distro_name, wsl_command};
@@ -147,7 +148,23 @@ impl Drop for Busy {
     }
 }
 
-pub(crate) async fn export(distro: &str, destination: &str) -> Result<BackupResult, String> {
+/// Bytes written so far (and the expected total when known), once a second while wsl.exe works.
+pub(crate) type SizeProgress<'a> = &'a (dyn Fn(u64, Option<u64>) + Sync);
+
+/// Runs `work` while reporting the size of `file` every second: wsl.exe itself reports nothing,
+/// but the file it writes grows as it goes.
+async fn watching_size<T>(file: &Path, total: Option<u64>, progress: SizeProgress<'_>, work: impl std::future::Future<Output = T>) -> T {
+    tokio::pin!(work);
+    let mut tick = tokio::time::interval(Duration::from_secs(1));
+    loop {
+        tokio::select! {
+            result = &mut work => return result,
+            _ = tick.tick() => progress(std::fs::metadata(file).map(|m| m.len()).unwrap_or(0), total),
+        }
+    }
+}
+
+pub(crate) async fn export(distro: &str, destination: &str, progress: SizeProgress<'_>) -> Result<BackupResult, String> {
     validate_distro_name(distro)?;
     if is_system_distro(distro) {
         return Err(format!("{distro} pertence a outro programa (Docker, Rancher...): faça o backup por ele"));
@@ -157,7 +174,9 @@ pub(crate) async fn export(distro: &str, destination: &str) -> Result<BackupResu
     let started = Instant::now();
     let mut cmd = wsl_command();
     cmd.args(["--export", distro, destination]);
-    run(cmd, BACKUP_TIMEOUT).await.map_err(|e| format!("O WSL não conseguiu exportar {distro}: {e}"))?;
+    watching_size(Path::new(destination), None, progress, run(cmd, BACKUP_TIMEOUT))
+        .await
+        .map_err(|e| format!("O WSL não conseguiu exportar {distro}: {e}"))?;
     let size = std::fs::metadata(destination).map(|m| m.len()).map_err(|e| format!("Backup não encontrado depois de exportar: {e}"))?;
     Ok(BackupResult { file: destination.to_string(), size, seconds: started.elapsed().as_secs() })
 }
@@ -187,7 +206,9 @@ exit 0"#;
     Ok(Some(user))
 }
 
-pub(crate) async fn import(name: &str, install_dir: &str, source: &str) -> Result<ImportResult, String> {
+/// `progress` follows the new distro's ext4.vhdx against the size of the .tar (the disk ends up
+/// a little bigger than its contents, so the share is an estimate that the UI caps below 100%).
+pub(crate) async fn import(name: &str, install_dir: &str, source: &str, progress: SizeProgress<'_>) -> Result<ImportResult, String> {
     let existing: Vec<String> = list_distros().await?.into_iter().map(|d| d.name).collect();
     validate_new_distro_name(name, &existing)?;
     validate_backup_source(source)?;
@@ -197,7 +218,11 @@ pub(crate) async fn import(name: &str, install_dir: &str, source: &str) -> Resul
     let started = Instant::now();
     let mut cmd = wsl_command();
     cmd.args(["--import", name, install_dir, source, "--version", "2"]);
-    run(cmd, BACKUP_TIMEOUT).await.map_err(|e| format!("O WSL não conseguiu restaurar o backup: {e}"))?;
+    let total = std::fs::metadata(source).map(|m| m.len()).ok();
+    let vhdx = Path::new(install_dir).join("ext4.vhdx");
+    watching_size(&vhdx, total, progress, run(cmd, BACKUP_TIMEOUT))
+        .await
+        .map_err(|e| format!("O WSL não conseguiu restaurar o backup: {e}"))?;
     // Best effort: the distro exists already, opening as root is not a failure.
     let default_user = restore_default_user(name).await.unwrap_or(None);
     Ok(ImportResult { distro: name.to_string(), default_user, seconds: started.elapsed().as_secs() })
@@ -215,14 +240,32 @@ fn defaults() -> BackupDefaults {
 // Tauri commands
 // ---------------------------------------------------------------------------
 
-#[tauri::command]
-pub async fn export_distro_backup(distro: String, destination_file: String) -> Result<BackupResult, String> {
-    export(&distro, &destination_file).await
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BackupProgress {
+    bytes: u64,
+    total: Option<u64>,
+}
+
+fn emitter(app: &AppHandle) -> impl Fn(u64, Option<u64>) + Sync + '_ {
+    move |bytes, total| {
+        let _ = app.emit("backup-progress", BackupProgress { bytes, total });
+    }
 }
 
 #[tauri::command]
-pub async fn import_distro_backup(new_distro_name: String, install_dir: String, source_tar_file: String) -> Result<ImportResult, String> {
-    import(&new_distro_name, &install_dir, &source_tar_file).await
+pub async fn export_distro_backup(app: AppHandle, distro: String, destination_file: String) -> Result<BackupResult, String> {
+    export(&distro, &destination_file, &emitter(&app)).await
+}
+
+#[tauri::command]
+pub async fn import_distro_backup(
+    app: AppHandle,
+    new_distro_name: String,
+    install_dir: String,
+    source_tar_file: String,
+) -> Result<ImportResult, String> {
+    import(&new_distro_name, &install_dir, &source_tar_file, &emitter(&app)).await
 }
 
 /// Suggested folders; the backup folder is created so the save dialog can open in it.
@@ -309,12 +352,12 @@ mod tests {
         run(sh_in_distro(src, Some("root"), "adduser -D -u 1000 kyo && echo marcador > /root/prova", &[]), SHORT_TIMEOUT).await.unwrap();
 
         let tar = dir.join("backup.tar").display().to_string();
-        let exported = export(src, &tar).await.expect("export");
+        let exported = export(src, &tar, &|_, _| {}).await.expect("export");
         println!("{exported:?}");
         assert!(exported.size > 1_000_000);
-        assert!(import(src, &dir.join("x").display().to_string(), &tar).await.unwrap_err().contains("Já existe"));
+        assert!(import(src, &dir.join("x").display().to_string(), &tar, &|_, _| {}).await.unwrap_err().contains("Já existe"));
 
-        let imported = import(copy, &dir.join("copy").display().to_string(), &tar).await.expect("import");
+        let imported = import(copy, &dir.join("copy").display().to_string(), &tar, &|_, _| {}).await.expect("import");
         println!("{imported:?}");
         assert_eq!(imported.default_user.as_deref(), Some("kyo"));
         let who = run(sh_in_distro(copy, None, "id -un", &[]), SHORT_TIMEOUT).await.unwrap();

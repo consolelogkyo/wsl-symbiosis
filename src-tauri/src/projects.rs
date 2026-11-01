@@ -542,6 +542,11 @@ impl ProjectRunner {
         Ok(self.get(id)?.log.lock().unwrap().iter().cloned().collect())
     }
 
+    /// Last non-empty log line (the progress panel's status line).
+    pub fn log_tail(&self, id: &str) -> Result<Option<String>, String> {
+        Ok(self.get(id)?.log.lock().unwrap().iter().rev().find(|l| !l.trim().is_empty()).cloned())
+    }
+
     pub fn dismiss(&self, id: &str) -> Result<(), String> {
         let mut tasks = self.tasks.lock().unwrap();
         if tasks.get(id).is_some_and(|t| t.info.lock().unwrap().active()) {
@@ -602,6 +607,11 @@ pub fn list_project_tasks(runner: State<'_, ProjectRunner>) -> Vec<TaskInfo> {
 #[tauri::command]
 pub fn get_project_log(runner: State<'_, ProjectRunner>, id: String) -> Result<Vec<String>, String> {
     runner.log(&id)
+}
+
+#[tauri::command]
+pub fn get_project_log_tail(runner: State<'_, ProjectRunner>, id: String) -> Result<Option<String>, String> {
+    runner.log_tail(&id)
 }
 
 #[tauri::command]

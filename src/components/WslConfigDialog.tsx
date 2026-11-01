@@ -6,6 +6,7 @@ import { BTN_GHOST, BTN_PRIMARY } from "../lib/ui";
 import { errorMessage } from "../lib/wsl";
 import { GIB, type WslConfigSnapshot, type WslGlobalConfig, configChanged, getWslConfig, saveWslConfig } from "../lib/wslconfig";
 import { InfoTip } from "./InfoTip";
+import { useProgressContext } from "../hooks/useProgress";
 
 interface Props {
   onClose: () => void;
@@ -92,12 +93,20 @@ export function WslConfigDialog({ onClose, onSaved }: Props) {
     else set("autoMemoryReclaim", value);
   };
 
+  const { track } = useProgressContext();
   const save = async (restart: boolean) => {
     if (!draft) return;
     setSaving(restart ? "restart" : "save");
     setError(null);
     try {
-      await saveWslConfig(draft, restart);
+      if (restart) {
+        // Restarting WSL takes a few seconds (and stops Docker Desktop cleanly first).
+        await track("Aplicando os limites e reiniciando o WSL", () => saveWslConfig(draft, true), {
+          detail: "Salvando o .wslconfig e desligando o WSL",
+        });
+      } else {
+        await saveWslConfig(draft, false);
+      }
       onSaved(restart);
     } catch (err) {
       setError(errorMessage(err));

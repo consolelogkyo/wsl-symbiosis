@@ -11,6 +11,7 @@ import {
 import { errorMessage } from "../../lib/wsl";
 import { TOOL_BRANDS } from "../../lib/brands";
 import { BrandIcon } from "../BrandIcon";
+import { useProgressContext } from "../../hooks/useProgress";
 import { BTN_DANGER_SOLID, BTN_PRIMARY, FIELD, INPUT, LABEL } from "../../lib/ui";
 
 interface Props {
@@ -45,6 +46,7 @@ export function NpmGlobals({ distro, prefix, packages, nvmGlobals, activeNode, o
   const [confirming, setConfirming] = useState<string | null>(null);
   const [removing, setRemoving] = useState<string | null>(null);
   const [log, setLog] = useState<Log | null>(null);
+  const { track } = useProgressContext();
 
   const specError = packageSpecError(spec.trim());
   // Active Node's globals + those that only exist in other nvm versions (e.g. eas-cli in v20).
@@ -84,10 +86,14 @@ export function NpmGlobals({ distro, prefix, packages, nvmGlobals, activeNode, o
     setInstalling(true);
     setLog(null);
     try {
-      const out = await installNpmGlobal(distro, value);
-      setLog({ ok: true, title: `${value} instalado`, output: out });
-      setSpec("");
-      await onChanged();
+      await track(`Instalando ${value} (global)`, async (update) => {
+        update({ detail: `npm install -g ${value}`, percent: 0 });
+        const out = await installNpmGlobal(distro, value);
+        setLog({ ok: true, title: `${value} instalado`, output: out });
+        setSpec("");
+        update({ detail: "Atualizando a lista de pacotes", percent: 50 });
+        await onChanged();
+      });
     } catch (err) {
       setLog({ ok: false, title: `Falha ao instalar ${value}`, output: errorMessage(err) });
     } finally {
@@ -99,9 +105,13 @@ export function NpmGlobals({ distro, prefix, packages, nvmGlobals, activeNode, o
     setRemoving(name);
     setLog(null);
     try {
-      const out = await uninstallNpmGlobal(distro, name);
-      setLog({ ok: true, title: `${name} removido`, output: out });
-      await onChanged();
+      await track(`Removendo ${name} (global)`, async (update) => {
+        update({ detail: `npm uninstall -g ${name}`, percent: 0 });
+        const out = await uninstallNpmGlobal(distro, name);
+        setLog({ ok: true, title: `${name} removido`, output: out });
+        update({ detail: "Atualizando a lista de pacotes", percent: 50 });
+        await onChanged();
+      });
     } catch (err) {
       setLog({ ok: false, title: `Falha ao remover ${name}`, output: errorMessage(err) });
     } finally {

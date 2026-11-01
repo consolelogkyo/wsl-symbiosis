@@ -5,6 +5,8 @@ import { formatBytes } from "../../lib/format";
 import { BTN_GHOST, BTN_PRIMARY } from "../../lib/ui";
 import { type VhdxCompactResult, type VhdxInfo, compactDistroVhdx, errorMessage } from "../../lib/wsl";
 import { InfoTip } from "../InfoTip";
+import { ProgressBar } from "../ProgressBar";
+import { listen } from "@tauri-apps/api/event";
 
 interface Props {
   distro: string;
@@ -23,6 +25,19 @@ type Phase = { step: "confirm" } | { step: "running" } | { step: "done"; result:
 export function CompactVhdxDialog({ distro, vhdx, linuxUsed, runningProjects, onClose, onWslRestarted }: Props) {
   const [phase, setPhase] = useState<Phase>({ step: "confirm" });
   const running = phase.step === "running";
+  // Stage reported by vhdx.rs (fstrim → shutdown → wait for the disk → elevated compaction).
+  const [stage, setStage] = useState<{ step: number; steps: number; label: string } | null>(null);
+  useEffect(() => {
+    if (!running) return;
+    setStage(null);
+    let unlisten: (() => void) | undefined;
+    let gone = false;
+    listen<{ step: number; steps: number; label: string }>("vhdx-progress", (e) => setStage(e.payload)).then((u) => (gone ? u() : (unlisten = u)));
+    return () => {
+      gone = true;
+      unlisten?.();
+    };
+  }, [running]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -121,6 +136,13 @@ export function CompactVhdxDialog({ distro, vhdx, linuxUsed, runningProjects, on
             <div className="flex flex-col items-center gap-3 py-6 text-center">
               <Loader2 className="size-6 animate-spin text-zinc-300" />
               <p className="text-sm font-medium text-zinc-100">Compactando o disco virtual…</p>
+              <div className="w-full max-w-sm space-y-1.5">
+                <ProgressBar percent={stage ? (stage.step / stage.steps) * 100 : 0} className="h-2" />
+                <div className="flex justify-between gap-3 text-[11px] text-zinc-500">
+                  <span className="truncate text-left">{stage?.label ?? "Preparando"}</span>
+                  <span className="shrink-0 font-mono tabular-nums">etapa {(stage?.step ?? 0) + 1} de {stage?.steps ?? 4}</span>
+                </div>
+              </div>
               <p className="max-w-sm text-xs leading-relaxed text-zinc-500">
                 Confirme o pedido de administrador do Windows, se aparecer. Não feche o app: em discos grandes isso leva alguns minutos.
               </p>

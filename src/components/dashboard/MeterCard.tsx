@@ -43,7 +43,8 @@ export function MeterCard({
   info,
 }: Props) {
   return (
-    <div className="flex flex-col rounded-lg border border-zinc-800 bg-zinc-900 p-4">
+    // Fades in when it appears (e.g. the meters of a distro that just started).
+    <div className="anim-fade-in flex flex-col rounded-lg border border-zinc-800 bg-zinc-900 p-4">
       <div className="flex items-center gap-2">
         <Icon className="size-3.5 text-zinc-500" />
         <span className="min-w-0 truncate text-[11px] font-medium tracking-wider text-zinc-500 uppercase">{title}</span>

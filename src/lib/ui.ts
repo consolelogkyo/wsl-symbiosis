@@ -31,5 +31,8 @@ export const FIELD =
 
 export const INPUT = "w-full bg-transparent text-xs text-zinc-100 placeholder:text-zinc-600 focus:outline-none";
 
+/** Native <select> inside a FIELD: dark dropdown list too. */
+export const SELECT = "w-full cursor-pointer bg-zinc-950 py-0.5 text-xs text-zinc-100 [color-scheme:dark] focus:outline-none";
+
 /** Error / warning strips under toolbars. */
 export const BANNER_ERROR = "flex items-start gap-2.5 border-b border-rose-500/20 bg-rose-500/[0.04] px-4 py-2 text-xs text-rose-300";

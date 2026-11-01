@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ArrowUp, Loader2, Play, Power, RefreshCw, Settings2 } from "lucide-react";
 import type { Distro } from "../lib/wsl";
-import type { PendingAction } from "../hooks/useWsl";
+import { type PendingAction, isDockerDistro } from "../hooks/useWsl";
 import { useUpdaterContext } from "../hooks/useUpdater";
 import { percentOf } from "../lib/updater";
 import { BTN_DANGER, BTN_GHOST, BTN_PRIMARY } from "../lib/ui";
@@ -50,16 +50,7 @@ export function Titlebar(p: Props) {
 
         <DistroSelect distros={p.distros} selected={p.selected} loading={p.loading} onSelect={p.onSelectDistro} />
 
-        {p.selected && !running && (
-          <button type="button" onClick={p.onStart} disabled={busy} className={`${BTN_PRIMARY} h-7`}>
-            {p.pending === "start" ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
-            Iniciar
-          </button>
-        )}
-        <button type="button" onClick={p.onShutdown} disabled={busy} title="wsl --shutdown" className={`${BTN_DANGER} h-7`}>
-          {p.pending === "shutdown" ? <Loader2 className="size-3.5 animate-spin" /> : <Power className="size-3.5" />}
-          Desligar WSL
-        </button>
+        <PowerButton {...p} running={running} busy={busy} />
 
         <span className="mx-0.5 h-4 w-px bg-zinc-800" />
         <button
@@ -82,6 +73,41 @@ export function Titlebar(p: Props) {
 
       <WindowControls />
     </header>
+  );
+}
+
+/** One button that turns things on or off, never both at once. For the docker-desktop distro it
+ *  talks about Docker (it starts/stops Docker Desktop itself), not about WSL. */
+function PowerButton(p: Props & { running: boolean; busy: boolean }) {
+  const docker = isDockerDistro(p.selected?.name);
+  // No distro selected (or none installed): nothing to start, but WSL can still be shut down.
+  const on = p.running || !p.selected;
+  const label =
+    p.pending === "start"
+      ? docker ? "Ligando o Docker…" : "Iniciando…"
+      : p.pending === "shutdown"
+        ? docker ? "Desligando o Docker…" : "Desligando…"
+        : on
+          ? docker ? "Desligar o Docker" : "Desligar WSL"
+          : docker ? "Ligar o Docker" : "Iniciar";
+  const title = on
+    ? docker
+      ? "Fecha o Docker Desktop de forma segura (docker desktop stop)"
+      : "Desliga todas as distros e o Docker Desktop, se estiver ligado (wsl --shutdown)"
+    : docker
+      ? "Abre o Docker Desktop e espera ele ficar pronto"
+      : `Liga a distro ${p.selected?.name}`;
+  return (
+    <button
+      type="button"
+      onClick={on ? p.onShutdown : p.onStart}
+      disabled={p.busy}
+      title={title}
+      className={`${on ? BTN_DANGER : BTN_GHOST} h-7 min-w-[8.5rem] justify-center whitespace-nowrap`}
+    >
+      {p.busy ? <Loader2 className="size-3.5 animate-spin" /> : on ? <Power className="size-3.5" /> : <Play className="size-3.5" />}
+      {label}
+    </button>
   );
 }
 

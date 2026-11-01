@@ -164,12 +164,14 @@ function RunButton({ distro, path, onRun }: { distro: string; path: string; onRu
   }, [menu, distro, path]);
 
   return (
-    <div className="flex shrink-0 items-center rounded-full border border-emerald-500/30 bg-emerald-500/10 text-emerald-300">
+    // items-stretch + overflow-hidden: both halves fill the pill's full height, so the hover
+    // background of the chevron reaches the top and bottom edges like the "Rodar" half.
+    <div className="flex shrink-0 items-stretch overflow-hidden rounded-full border border-emerald-500/30 bg-emerald-500/10 text-emerald-300">
       <button
         type="button"
         onClick={() => onRun()}
         title="Rodar o script de desenvolvimento (dev / start)"
-        className="flex items-center gap-1 rounded-l-full py-0.5 pr-1.5 pl-2 text-[11px] font-semibold hover:bg-emerald-500/20"
+        className="flex items-center gap-1 py-0.5 pr-1.5 pl-2 text-[11px] font-semibold transition-colors hover:bg-emerald-500/20"
       >
         <Play className="size-3 fill-current" />
         Rodar
@@ -179,7 +181,7 @@ function RunButton({ distro, path, onRun }: { distro: string; path: string; onRu
         type="button"
         onClick={() => setMenu(menu ? null : placeMenu(anchor.current!.getBoundingClientRect(), MENU_WIDTH))}
         title="Escolher script"
-        className="rounded-r-full border-l border-emerald-500/30 py-0.5 pr-1.5 pl-1 hover:bg-emerald-500/20"
+        className="flex items-center border-l border-emerald-500/30 pr-1.5 pl-1 transition-colors hover:bg-emerald-500/20"
       >
         <ChevronDown className="size-3" />
       </button>

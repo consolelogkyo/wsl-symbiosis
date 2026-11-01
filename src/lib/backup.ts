@@ -1,4 +1,18 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+
+/** Once a second while wsl.exe works: bytes of the .tar (export) or of the new ext4.vhdx
+ *  (import, `total` = size of the .tar). */
+export interface BackupProgress {
+  bytes: number;
+  total: number | null;
+}
+export const onBackupProgress = (cb: (p: BackupProgress) => void) => listen<BackupProgress>("backup-progress", (e) => cb(e.payload));
+
+/** Share done, capped at 99% (the final size is only an estimate until wsl.exe finishes). */
+export function backupPercent(bytes: number, total: number | null): number | null {
+  return total && total > 0 ? Math.min(99, (bytes / total) * 100) : null;
+}
 
 // Mirrors of src-tauri/src/backup.rs (wsl --export / --import).
 

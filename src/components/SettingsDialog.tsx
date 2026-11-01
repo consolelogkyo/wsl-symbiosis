@@ -5,7 +5,7 @@ import { GitSettings } from "./GitSettings";
 import type { Distro, WslInfo } from "../lib/wsl";
 import { errorMessage, getWslInfo } from "../lib/wsl";
 import type { ToolId } from "../lib/explorer";
-import { type CloseBehavior, type GitAuth, SettingsSnapshot, saveSettings } from "../lib/settings";
+import { type CloseBehavior, type GitAuth, SettingsSnapshot, applyMotion, saveSettings, setReduceMotion } from "../lib/settings";
 import { reloadTools, useTools } from "../hooks/useTools";
 import { useToolPaths } from "../hooks/useToolPaths";
 import { BTN_GHOST, BTN_PRIMARY } from "../lib/ui";
@@ -13,6 +13,7 @@ import { LogoMark } from "./Logo";
 import { StatusDot } from "./StatusDot";
 import { IdeGrid, ToolPathList } from "./ToolSettings";
 import { ShortcutsSettings } from "./ShortcutsSettings";
+import { InfoTip } from "./InfoTip";
 import { SHORTCUT_DEFS, type ShortcutId, type Shortcuts, resolveShortcuts } from "../lib/shortcuts";
 
 interface Props {
@@ -280,9 +281,11 @@ export function SettingsDialog({ onboarding, settings, distros, info: initialInf
             </div>
           </Section>
 
+          <MotionSection initial={settings.reduceMotion ?? false} />
+
           <UpdatesSection />
 
-          <Section index="07" title="Configuração inicial" hint="Setup Zero-to-Hero">
+          <Section index="08" title="Configuração inicial" hint="Setup Zero-to-Hero">
             <div className="flex items-center gap-3 rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3">
               <p className="flex-1 text-xs leading-relaxed text-zinc-500">
                 Refaz o diagnóstico da máquina e permite instalar ou reparar WSL, Ubuntu, Windows Terminal, zsh e Node.
@@ -329,6 +332,51 @@ export function SettingsDialog({ onboarding, settings, distros, info: initialInf
   );
 }
 
+/** Interface animations, applied right away (and saved right away: no need for "Salvar"). */
+function MotionSection({ initial }: { initial: boolean }) {
+  const [reduce, setReduce] = useState(initial);
+  const choose = (value: boolean) => {
+    setReduce(value);
+    applyMotion(value);
+    setReduceMotion(value).catch(() => {});
+  };
+  const options = [
+    { reduce: false, label: "Ligadas", detail: "Telas e janelas aparecem com uma transição curta e suave, e o conteúdo que muda (como os pacotes depois de trocar o Node) faz a troca sem pulos." },
+    { reduce: true, label: "Desligadas", detail: "Tudo muda na hora, sem transições. Os indicadores de carregamento continuam se mexendo." },
+  ];
+  return (
+    <Section index="06" title="Animações da interface" hint="Vale na hora">
+      <div className="grid grid-cols-2 gap-2" role="radiogroup">
+        {options.map((o) => {
+          const active = reduce === o.reduce;
+          return (
+            <button
+              key={o.label}
+              type="button"
+              role="radio"
+              aria-checked={active}
+              onClick={() => choose(o.reduce)}
+              className={`rounded-lg border px-3.5 py-3 text-left transition-colors ${active ? "border-zinc-100 bg-zinc-900" : "border-zinc-800 hover:border-zinc-600"}`}
+            >
+              <span className="flex items-center gap-2 text-sm font-medium text-zinc-100">
+                <span className={`flex size-3.5 shrink-0 items-center justify-center rounded-full border ${active ? "border-zinc-100" : "border-zinc-600"}`}>
+                  {active && <span className="size-1.5 rounded-full bg-zinc-100" />}
+                </span>
+                {o.label}
+              </span>
+              <span className="mt-1 block text-[11px] leading-relaxed text-zinc-500">{o.detail}</span>
+            </button>
+          );
+        })}
+      </div>
+      <p className="mt-2 flex items-center gap-1.5 text-[11px] text-zinc-600">
+        Se os “Efeitos de animação” do Windows estiverem desligados, o app também fica sem animações.
+        <InfoTip>Configurações do Windows → Acessibilidade → Efeitos visuais → Efeitos de animação.</InfoTip>
+      </p>
+    </Section>
+  );
+}
+
 function Section({ index, title, hint, children }: { index: string; title: string; hint?: string; children: ReactNode }) {
   return (
     <section>
@@ -359,7 +407,7 @@ function UpdatesSection() {
               : { label: "Ainda não verificado", dot: "bg-zinc-600" };
 
   return (
-    <Section index="06" title="Atualizações do aplicativo" hint="GitHub Releases · verificação automática ao abrir">
+    <Section index="07" title="Atualizações do aplicativo" hint="GitHub Releases · verificação automática ao abrir">
       <div className="grid grid-cols-3 divide-x divide-zinc-800 rounded-lg border border-zinc-800 bg-zinc-900">
         <Cell label="Versão instalada" mono>
           {currentVersion ? `v${currentVersion}` : "—"}

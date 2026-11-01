@@ -37,6 +37,9 @@ pub struct Settings {
     /// What the window's ✕ / Alt+F4 does (tray.rs).
     #[serde(deserialize_with = "lenient_close_behavior")]
     pub close_behavior: CloseBehavior,
+    /// Interface transitions off (Configurações → Aparência). Changed only by
+    /// `set_reduce_motion`, so a save from elsewhere never turns animations back on.
+    pub reduce_motion: bool,
 }
 
 /// An unknown value (written by a newer version) means "ask", instead of failing the whole file
@@ -272,6 +275,7 @@ pub fn save_settings(store: State<'_, SettingsStore>, mut settings: Settings) ->
     settings.wsl_reboot_pending = current.wsl_reboot_pending;
     // The Settings dialog doesn't send it: never let a save reopen the setup.
     settings.setup_wizard_seen |= current.setup_wizard_seen;
+    settings.reduce_motion = current.reduce_motion;
     let saved = store.save(settings)?;
     Ok(snapshot(&store, saved))
 }
@@ -281,6 +285,15 @@ pub fn save_settings(store: State<'_, SettingsStore>, mut settings: Settings) ->
 pub fn set_close_behavior(store: State<'_, SettingsStore>, behavior: CloseBehavior) -> Result<SettingsSnapshot, String> {
     let mut next = store.get();
     next.close_behavior = behavior;
+    let saved = store.save(next)?;
+    Ok(snapshot(&store, saved))
+}
+
+/// "Animações da interface" toggle: applied right away, changes only this field.
+#[tauri::command]
+pub fn set_reduce_motion(store: State<'_, SettingsStore>, reduce: bool) -> Result<SettingsSnapshot, String> {
+    let mut next = store.get();
+    next.reduce_motion = reduce;
     let saved = store.save(next)?;
     Ok(snapshot(&store, saved))
 }

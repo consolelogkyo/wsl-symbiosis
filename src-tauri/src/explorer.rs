@@ -1267,7 +1267,9 @@ zeta/3f9c2a1b8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a
 
     #[test]
     fn finds_gui_exe_behind_cmd_shims() {
-        let root = std::env::temp_dir().join(format!("wsl-symbiosis-icons-{}", std::process::id()));
+        // Deep enough that the 4-folder search never reaches %TEMP% itself (stray installers live there).
+        let top = std::env::temp_dir().join(format!("wsl-symbiosis-icons-{}", std::process::id()));
+        let root = top.join("a").join("b");
         let bin = root.join("Fake IDE").join("bin");
         std::fs::create_dir_all(&bin).unwrap();
         let shim = bin.join("fake.cmd");
@@ -1280,7 +1282,7 @@ zeta/3f9c2a1b8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a
 
         assert_eq!(icon_source(&shim), Some(root.join("Fake IDE").join("Fake IDE.exe")));
         assert_eq!(icon_source(&empty_alias), None, "0-byte app execution aliases have no icon");
-        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&top);
     }
 
     #[test]

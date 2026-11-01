@@ -292,7 +292,7 @@ function GuestPlaceholder({ selected, pending, onStart, error, vhdx, onCompact }
 }) {
   const running = selected.state === "Running";
   return (
-    <div className="col-span-1 flex flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-zinc-800 p-6 text-center 2xl:col-span-3">
+    <div className="anim-fade-in col-span-1 flex flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-zinc-800 p-6 text-center 2xl:col-span-3">
       {error ? (
         <>
           <TriangleAlert className="size-5 text-amber-400" />
@@ -375,7 +375,7 @@ export function DashboardView({ distros, selected, info, pending, telemetry, onS
             {metrics ? (
               <HostMeter host={metrics.host} />
             ) : (
-              <div className={`${CARD} h-40 animate-pulse`} />
+              <div className={`${CARD} anim-fade-in h-40 animate-pulse`} />
             )}
             {guest ? (
               <GuestMeters
@@ -433,7 +433,9 @@ export function DashboardView({ distros, selected, info, pending, telemetry, onS
       )}
 
       {selected && guest && (
-        <ProcessTable distro={selected.name} processes={guest.processes} onKilled={refresh} />
+        <div className="anim-rise">
+          <ProcessTable distro={selected.name} processes={guest.processes} onKilled={refresh} />
+        </div>
       )}
 
       <section className="overflow-hidden rounded-lg border border-zinc-800 bg-zinc-900">

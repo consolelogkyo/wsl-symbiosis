@@ -26,6 +26,11 @@ cd src-tauri && cargo check
 
 Antes de finalizar qualquer tarefa: `cargo check` **e** `npm run build` precisam passar com zero erros.
 
+Tamanho do bundle **não** é critério neste projeto: o JS vai embutido no `.exe` e é lido do disco, sem
+rede. O aviso de chunk do Vite foi elevado para 2 MB (`vite.config.ts`); não reorganize código nem
+crie lazy loading só para reduzir tamanho. Lazy loading só quando há ganho real de abertura (ex.: o
+xterm do Terminal, ~300 kB).
+
 ## Estrutura
 
 ```
@@ -63,6 +68,11 @@ src/                      # frontend React
   components/dashboard/CompactVhdxDialog.tsx  # confirmar → compactar (UAC) → antes/depois
   components/GitIdentityPanel.tsx  # useGitIdentity + GitIdentityCard + SshKeyCard (Configurações → Git e setup)
   components/dashboard/BackupDistroDialog.tsx # backup (.tar) e restauração; lib/backup.ts, lib/ssh.ts
+  lib/docker.ts           # tipos/invoke de docker.rs + database.rs, presets dos bancos, validações espelhadas
+  hooks/useDocker.ts      # status do motor + containers (5 s, só com a tela ativa e a janela visível)
+  views/DatabaseView.tsx  # Bancos & Containers (lazy): cards dos bancos, outros containers, estados do Docker
+  components/database/    # TableExplorer (tabelas + Dados/Estrutura/Editor SQL), CreateDatabaseDialog,
+                          # CreateTableDialog, InsertRowDialog, SqlEditor, ContainerDialogs (logs/remover)
   components/             # Titlebar (janela sem bordas), Sidebar (+ AO VIVO), Logo, DistroSelect,
                           # StatusDot, SettingsDialog (abas Sistema & IDEs / Git / Atalhos; o 1º uso agora é o setup),
                           # ShortcutsSettings (gravador de atalhos, gestos de mouse, fixos),
@@ -75,7 +85,8 @@ src/                      # frontend React
   components/explorer/    # ExplorerPane (1 aba), ExplorerToolbar, EntryRow, OpenInButtons, ProjectBadges, FileEditor
   components/packages/    # ToolGrid, NvmCard, NpmGlobals, PortsTable
   components/terminal/    # TerminalPane (1 xterm + 1 sessão PTY por aba)
-  views/index.ts          # NAV_ITEMS — as 4 telas (dashboard, explorer, packages, terminal)
+  views/index.ts          # NAV_ITEMS — as 5 telas (dashboard, explorer, packages, terminal, database);
+                          # a ordem é a dos atalhos fixos Ctrl+1…Ctrl+5 (navShortcut, no App)
   views/*View.tsx         # uma tela por item de navegação
 src-tauri/src/
   lib.rs                  # registro de comandos/estado do Tauri
@@ -95,6 +106,8 @@ src-tauri/src/
   ssh.rs                  # identidade git (user.name/email) e chaves SSH: gerar, importar do Windows, chmod, teste
   backup.rs               # wsl --export (.tar) / --import (restaurar ou clonar com outro nome)
   lines.rs                # BoundedLines: leitura de saída linha a linha com teto por linha (16 KB)
+  docker.rs               # motor Docker (distro ou Docker Desktop), auto-start, containers, banco em 1 clique
+  database.rs             # explorador de tabelas via docker exec (psql/mysql/redis-cli), SQL gerado com segurança
 scripts/build-release.mjs # npm run release:build → instalador assinado + latest.json em dist-release/
 src-tauri/icons/
   app-icon.svg            # fonte do ícone; regenerar com `npx tauri icon src-tauri/icons/app-icon.svg`
@@ -274,6 +287,8 @@ O usuário tem `Ubuntu` (procps) e `docker-desktop` (busybox). Scripts dentro da
   seção `## X.Y.Z` do `docs/CHANGELOG.md` (vira as notas da release), `npm run release:build`,
   anexar o `.exe` e o `latest.json` de `dist-release/` na release `vX.Y.Z` (não pre-release).
 - O asset publicado não tem espaços (o GitHub troca espaço por ponto e a URL do latest.json quebraria).
+- Nada de `@palavra` no CHANGELOG/notas fora de crase: o GitHub transforma em menção a uma conta real
+  (aconteceu na 0.1.5 com "@usuario", que apareceu como contribuidor).
 - A checagem automática é silenciosa (offline / sem release = nada na tela); erro só aparece em
   ação do usuário. No Windows o `install()` sai do app com `process::exit` (pula `RunEvent::Exit`),
   por isso o frontend chama `prepare_for_update` antes.
@@ -397,6 +412,57 @@ O usuário tem `Ubuntu` (procps) e `docker-desktop` (busybox). Scripts dentro da
   CDN no `index.html`. Para conferir no app real: rode o `.exe` de release com
   `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9223` e inspecione via CDP.
 
+### 3.7.7 Bancos & Containers (docker.rs, database.rs, 0.1.6)
+- **Motor:** `detect` procura os dois em paralelo. O `dockerd` da distro (só se ela **já** estiver
+  ligada, regra 3.1, e não for distro de sistema; roda como root) vence o Docker Desktop
+  (`%ProgramFiles%\Docker\Docker\resources\bin\docker.exe`, senão `docker.exe` do PATH). O
+  `/usr/bin/docker` do Ubuntu desta máquina é só o atalho da integração do Docker Desktop (sem
+  `dockerd`): conta como Docker Desktop. `DockerManager` guarda o último motor que respondeu.
+- `start_docker_engine`: Docker Desktop → `Docker Desktop.exe` destacado (sobrevive ao app) e
+  polling de `docker version` até 150 s; distro → `service docker start || systemctl start docker`.
+  Quando o backend do Desktop trava, ele grava `%LOCALAPPDATA%\Docker\backend.error.json` e abre a
+  janela de erro dele: `desktop_crash_since` lê esse arquivo (só se for mais novo que o clique) e o
+  app para de esperar na hora com o motivo (`explain_desktop_crash`). Se o Desktop fecha antes de
+  ficar pronto (Quit), `desktop_running` também encerra a espera. O app não apaga arquivos do Docker
+  Desktop: o socket velho `run\dockerInference` (bug do Docker Desktop 4.67) é explicado para o usuário.
+- **Segredos nunca em argv:** `Engine::run(args, …, secrets)` → no Docker Desktop viram env do
+  `docker.exe` (`-e NOME` sem valor), na distro vão por stdin (`NATIVE_DOCKER` lê N linhas
+  `NOME=valor` e faz `export`). O teste `builds_run_arguments_without_secrets_in_argv` garante isso.
+- **Banco em 1 clique** (`run_args`, testado): label `com.wslsymbiosis.managed=true` (+ `kind`),
+  `--restart unless-stopped`, porta **só em 127.0.0.1** (fora da rede local; testado que o Ubuntu
+  e o Windows alcançam por `localhost`/`127.0.0.1`), volume `symbiosis_<nome>_data`. Volume já existente =
+  erro (dados antigos com outra senha). Prontidão por TCP dentro do container (`ready_script`): o
+  init do Postgres/MySQL roda um servidor temporário só no socket.
+- Porta livre (`port_is_free`): connect em 127.0.0.1 **e** bind em 127.0.0.1 (no Windows um socket em
+  0.0.0.0 não impede o bind no loopback; bind em 0.0.0.0 abriria o aviso do firewall).
+- **Explorador** (`database.rs`): tudo por `docker exec -i <id> sh -c <CLIENTE>`, com o SQL por
+  **stdin** e as credenciais lidas do env do próprio container (psql pelo socket local; mysql como
+  root se houver `MYSQL_ROOT_PASSWORD`). Nada de drivers no Rust.
+  - Identificadores: `validate_identifier` (sem aspas/ponto/barra/controle) **e** sempre entre aspas
+    (`pg_ident`/`my_ident`). Tabelas e colunas novas: `validate_new_identifier` (snake_case ASCII).
+  - Valores nunca viram texto SQL: Postgres por `json_populate_record(NULL::tabela, $tag$<json>$tag$)`
+    (`pg_literal` escolhe uma tag ausente do valor; o psql não interpreta `:var` nem `\cmd` dentro dela),
+    MySQL por `CONVERT(X'<hex>' USING utf8mb4)`.
+  - Editor SQL: `split_statements` (aspas, `$tag$`, comentários) e um marcador aleatório depois de cada
+    comando (`\echo MARK :ROW_COUNT` / `SELECT ROW_COUNT() AS MARK`). O marcador de NULL do psql
+    **não** pode começar com o marcador de fim (bug pego pelo E2E).
+  - Redis: scripts Lua de **uma linha** (`EVAL`) devolvem JSON (`cjson` codifica tabela vazia como `{}`).
+  - MongoDB: cria, conecta e gerencia o container, mas o explorador não abre (sugere o Compass).
+- **Efeitos React com chaves:** `useEffect(() => { el.scrollIntoView(); })`, nunca `useEffect(() => el.scrollIntoView())`.
+  No WebView2 atual os métodos de scroll devolvem Promise, e um efeito que devolve algo além de uma
+  função derruba a árvore inteira ("destroy is not a function", janela preta; aconteceu nos logs da
+  0.1.6). As telas ficam dentro de um `ErrorBoundary` (App), que mostra o erro em vez de apagar tudo.
+- **Desligar o WSL derruba o Docker Desktop** (a VM dele é a mesma): `wsl::shutdown_all` roda antes
+  `docker::stop_desktop_if_running` (`docker desktop stop`). Sem isso o Desktop fica quebrado
+  (socket velho em `run\dockerInference`, visto em 13:33 de 01/11/2026). `stop_docker_engine` desliga
+  o Desktop ou o `dockerd` da distro (`systemctl stop docker.socket docker`).
+- Titlebar: **um** botão de energia (`PowerButton`), "Iniciar" ↔ "Desligar WSL". Com a distro
+  `docker-desktop` selecionada ele vira "Ligar o Docker" / "Desligar o Docker" (`isDockerDistro`,
+  `useWsl.start/shutdown` chamam `start/stop_docker_engine`).
+- Testes reais (criam e removem tudo, inclusive o volume; ligam o Docker Desktop se preciso):
+  `WSL_TEST_DISTRO=Ubuntu cargo test --lib live_docker -- --ignored --nocapture`
+  (`live_docker_postgres_table_manager` e `live_docker_mysql_and_redis`).
+
 ### 3.8 Memória do WSL no Windows
 - Uma única chamada `NtQuerySystemInformation` por amostra, **sem cache de PID**, porque a VM nasce
   e morre com o `wsl --shutdown`. VM = `vmmemWSL` (ou `vmmem`); os auxiliares (`wslservice`,
@@ -434,6 +500,19 @@ utilitário de hardware. Zero gradientes, glows ou acentos coloridos decorativos
 - Ícones das IDEs: extraídos dos executáveis instalados (`get_tool_icons`, uma execução do
   PowerShell com `ExtractAssociatedIcon`, com cache). Use `<ToolIcon>`; sem ícone, cai no lucide.
   O Explorer fica de fora de propósito: mantém a pasta branca genérica (menos ruído visual).
+- **Progresso de operações longas** (`hooks/useProgress.ts`, `ProgressDock`, canto inferior direito):
+  `const { track } = useProgressContext(); await track("Título", (update) => ..., { detail })`. A barra
+  é o medidor segmentado (`<ProgressBar percent>`): **% real só quando existe medida** (camadas do
+  `docker pull`, tamanho do .tar/ext4.vhdx no backup, etapas conhecidas como nvm 0→50→100 e as 4 da
+  compactação, fila do git); sem medida, `percent: null` = segmento andando + etapa/última linha + tempo.
+  Nunca invente %. Tarefas de projeto (instalar; servidor até mostrar a URL) entram sozinhas, pela
+  `ActivityContext`, com a última linha do log (`get_project_log_tail`). Diálogos que já ficam no centro
+  (novo banco, backup, VHDX) mostram a barra dentro deles.
+- **Animações** (index.css): `anim-fade-in`, `anim-rise`, `anim-stale` (conteúdo sendo atualizado no
+  lugar), diálogos (`[role=dialog]`) entram sozinhos. Curtas (≤ 260 ms), sem mola. Desligadas com
+  `data-motion="off"` no `<html>` (Configurações → 06, `settings.reduceMotion`, só muda por
+  `set_reduce_motion`) ou com "Efeitos de animação" do Windows desligado (`prefers-reduced-motion`);
+  spinners e barras de progresso continuam se mexendo.
 - Textos auxiliares longos vão em `<InfoTip>` (ícone "i" com tooltip), não fixos na tela. O tooltip é
   renderizado via portal (fixed, z-100) e abre para cima quando falta espaço: nunca é cortado por
   diálogos (`overflow-hidden`) nem por áreas com scroll.

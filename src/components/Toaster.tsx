@@ -15,7 +15,7 @@ export function Toaster() {
         <div
           key={t.id}
           role="status"
-          className="pointer-events-auto rounded-lg border border-zinc-700 bg-zinc-900 p-3 shadow-2xl shadow-black/70"
+          className="anim-rise pointer-events-auto rounded-lg border border-zinc-700 bg-zinc-900 p-3 shadow-2xl shadow-black/70"
         >
           <div className="flex items-center gap-2">
             <span className={`size-1.5 shrink-0 rounded-full ${DOT[t.tone]}`} />

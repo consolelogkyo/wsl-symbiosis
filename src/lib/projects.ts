@@ -42,6 +42,8 @@ export const startProject = (distro: string, path: string, kind: TaskKind, scrip
 export const stopProject = (id: string) => invoke<void>("stop_project", { id });
 export const listProjectTasks = () => invoke<TaskInfo[]>("list_project_tasks");
 export const getProjectLog = (id: string) => invoke<string[]>("get_project_log", { id });
+/** Last non-empty log line (status line of the progress panel). */
+export const getProjectLogTail = (id: string) => invoke<string | null>("get_project_log_tail", { id });
 export const dismissProjectTask = (id: string) => invoke<void>("dismiss_project_task", { id });
 /** Stops a listening process the app didn't start (its whole tree, as root). */
 export const stopProcessTree = (distro: string, pid: number) => invoke<void>("stop_process_tree", { distro, pid });

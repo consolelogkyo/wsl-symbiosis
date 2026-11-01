@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect, useMemo, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react";
 import { resolveShortcuts } from "./lib/shortcuts";
 import type { TerminalRequest } from "./views/TerminalView";
 import { AlertTriangle, X } from "lucide-react";
@@ -13,13 +13,16 @@ import { GitQueueContext, useGitQueue } from "./hooks/useGitQueue";
 import { TaskLogDrawer } from "./components/TaskLogDrawer";
 import { UpdateDialog } from "./components/UpdateDialog";
 import { UpdaterContext, useUpdater } from "./hooks/useUpdater";
-import { SettingsSnapshot, getSettings } from "./lib/settings";
+import { SettingsSnapshot, applyMotion, getSettings } from "./lib/settings";
+import { ProgressContext, useProgress } from "./hooks/useProgress";
+import { ProgressDock } from "./components/ProgressDock";
 import { CloseDialog } from "./components/CloseDialog";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { onAppVisibility, onCloseRequested, onTrayNotice, onWslChanged, setTrayContext, subscribe } from "./lib/tray";
 import { isActive } from "./lib/projects";
 import { BANNER_ERROR } from "./lib/ui";
 import type { ToolId } from "./lib/explorer";
-import { NAV_ITEMS, type ViewId } from "./views";
+import { NAV_ITEMS, navShortcut, type ViewId } from "./views";
 import { shouldOpenSetup } from "./lib/setup";
 import { DashboardView } from "./views/DashboardView";
 import { ExplorerView } from "./views/ExplorerView";
@@ -35,6 +38,8 @@ const TerminalView = lazy(() => import("./views/TerminalView").then((m) => ({ de
 const SettingsDialog = lazy(() => import("./components/SettingsDialog").then((m) => ({ default: m.SettingsDialog })));
 // The setup runs once per machine: kept out of the main bundle.
 const SetupWizardView = lazy(() => import("./views/SetupWizardView").then((m) => ({ default: m.SetupWizardView })));
+// Bancos & Containers (table explorer, SQL editor): loaded when opened.
+const DatabaseView = lazy(() => import("./views/DatabaseView").then((m) => ({ default: m.DatabaseView })));
 
 export default function App() {
   const [view, setView] = useState<ViewId>("dashboard");
@@ -76,7 +81,12 @@ export default function App() {
       );
   }, []);
 
-  const wsl = useWsl(settings ? settings.defaultDistro : undefined, visible);
+  // Long operations (bars in the bottom-right panel): WSL/Docker on/off, installs, cleanups...
+  const progress = useProgress();
+  const wsl = useWsl(settings ? settings.defaultDistro : undefined, visible, progress.track);
+  // Configurações → Aparência: transitions on/off.
+  const reduceMotion = settings?.reduceMotion;
+  useEffect(() => applyMotion(reduceMotion), [reduceMotion]);
   // The sidebar's live panel needs telemetry on every screen; faster while on the Dashboard.
   const telemetry = useMetrics(wsl.selected?.name ?? null, view === "dashboard" ? 3000 : 5000, visible);
   // Projects started from the Explorer + everything listening in the distro (sidebar, rows, toasts).
@@ -113,11 +123,24 @@ export default function App() {
   const current = NAV_ITEMS.find((n) => n.id === view)!;
   const shortcuts = useMemo(() => resolveShortcuts(settings?.shortcuts), [settings]);
 
-  const navigate = (next: ViewId) => {
+  const navigate = useCallback((next: ViewId) => {
     if (next === "terminal") setTerminalMounted(true);
     if (next === "explorer") setExplorerMounted(true);
     setView(next);
-  };
+  }, []);
+
+  // Ctrl+1 … Ctrl+5: modules in Sidebar order (not while a dialog is open, nor in the setup).
+  useEffect(() => {
+    if (setupMode) return;
+    const onKey = (e: KeyboardEvent) => {
+      const next = navShortcut(e);
+      if (!next || document.querySelector("[aria-modal]")) return;
+      e.preventDefault();
+      navigate(next);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [setupMode, navigate]);
 
   // Until the startup decision is in (settings + should_open_setup, a few ms), draw only the
   // frame: no flash of the app before the setup takes over.
@@ -146,6 +169,7 @@ export default function App() {
 
   return (
     <ActivityContext.Provider value={activity}>
+    <ProgressContext.Provider value={progress}>
     <GitQueueContext.Provider value={gitQueue}>
     <UpdaterContext.Provider value={updater}>
     <div className="flex h-full flex-col overflow-hidden">
@@ -183,7 +207,9 @@ export default function App() {
           )}
 
           <main className="min-h-0 flex-1 overflow-auto">
+            <ErrorBoundary resetKey={view}>
             {view === "dashboard" && (
+              <div className="anim-fade-in">
               <DashboardView
                 distros={wsl.distros}
                 selected={wsl.selected}
@@ -194,9 +220,10 @@ export default function App() {
                 onStart={wsl.start}
                 onDistrosChanged={wsl.refresh}
               />
+              </div>
             )}
             {explorerMounted && (
-              <div className={view === "explorer" ? "h-full" : "hidden"}>
+              <div className={view === "explorer" ? "anim-fade-in h-full" : "hidden"}>
                 <ExplorerView
                   distro={wsl.selected}
                   distros={wsl.distros}
@@ -213,15 +240,25 @@ export default function App() {
               </div>
             )}
             {view === "packages" && (
-              <PackagesView distro={wsl.selected} pending={wsl.pending} onStart={wsl.start} />
+              <div className="anim-fade-in h-full">
+                <PackagesView distro={wsl.selected} pending={wsl.pending} onStart={wsl.start} />
+              </div>
+            )}
+            {view === "database" && (
+              <Suspense fallback={null}>
+                <div className="anim-fade-in h-full">
+                  <DatabaseView distro={wsl.selected} active={visible} />
+                </div>
+              </Suspense>
             )}
             {terminalMounted && (
-              <div className={view === "terminal" ? "h-full" : "hidden"}>
+              <div className={view === "terminal" ? "anim-fade-in h-full" : "hidden"}>
                 <Suspense fallback={null}>
                   <TerminalView distro={wsl.selected} request={terminalRequest} active={view === "terminal"} />
                 </Suspense>
               </div>
             )}
+            </ErrorBoundary>
           </main>
         </div>
       </div>
@@ -254,12 +291,14 @@ export default function App() {
 
       <TaskLogDrawer />
       <div className="pointer-events-none fixed right-4 bottom-4 z-50 flex w-96 flex-col gap-2">
+        <ProgressDock />
         <Toaster />
         <GitQueuePanel />
       </div>
     </div>
     </UpdaterContext.Provider>
     </GitQueueContext.Provider>
+    </ProgressContext.Provider>
     </ActivityContext.Provider>
   );
 }

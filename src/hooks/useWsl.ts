@@ -9,14 +9,20 @@ import {
   shutdownWsl,
   startDistro,
 } from "../lib/wsl";
+import { startDockerEngine, stopDockerEngine } from "../lib/docker";
+import type { Progress } from "./useProgress";
 
 const POLL_INTERVAL_MS = 5000;
 
 export type PendingAction = "start" | "shutdown" | null;
 
+/** The docker-desktop distro belongs to Docker Desktop: its button turns Docker on and off. */
+export const isDockerDistro = (name: string | undefined) => !!name && /^docker-desktop/i.test(name);
+
 /** `preferred`: default distro from the settings (undefined while they load).
- *  `active`: false while the window sits in the tray (polling pauses; the tray loop takes over). */
-export function useWsl(preferred?: string | null, active = true) {
+ *  `active`: false while the window sits in the tray (polling pauses; the tray loop takes over).
+ *  `track`: shows start/shutdown in the progress panel. */
+export function useWsl(preferred?: string | null, active = true, track?: Progress["track"]) {
   const [distros, setDistros] = useState<Distro[]>([]);
   const [info, setInfo] = useState<WslInfo | null>(null);
   const [selectedName, setSelectedName] = useState<string | null>(null);
@@ -71,10 +77,11 @@ export function useWsl(preferred?: string | null, active = true) {
   }, [preferred, distros]);
 
   const runAction = useCallback(
-    async (action: Exclude<PendingAction, null>, task: () => Promise<void>) => {
+    async (action: Exclude<PendingAction, null>, title: string, detail: string, task: () => Promise<unknown>) => {
       setPending(action);
       try {
-        await task();
+        if (track) await track(title, task, { detail });
+        else await task();
         setError(null);
       } catch (err) {
         setError(errorMessage(err));
@@ -83,7 +90,7 @@ export function useWsl(preferred?: string | null, active = true) {
         await refresh();
       }
     },
-    [refresh],
+    [refresh, track],
   );
 
   const selected = distros.find((d) => d.name === selectedName) ?? null;
@@ -98,7 +105,20 @@ export function useWsl(preferred?: string | null, active = true) {
     error,
     dismissError: () => setError(null),
     refresh,
-    start: () => selected && runAction("start", () => startDistro(selected.name)),
-    shutdown: () => runAction("shutdown", shutdownWsl),
+    start: () => {
+      if (!selected) return;
+      if (isDockerDistro(selected.name)) {
+        return runAction("start", "Ligando o Docker", "Abrindo o Docker Desktop e esperando ele ficar pronto", () =>
+          startDockerEngine(selected.name),
+        );
+      }
+      return runAction("start", `Iniciando ${selected.name}`, "Ligando a distro", () => startDistro(selected.name));
+    },
+    shutdown: () => {
+      if (isDockerDistro(selected?.name)) {
+        return runAction("shutdown", "Desligando o Docker", "Fechando o Docker Desktop de forma segura", () => stopDockerEngine(selected!.name));
+      }
+      return runAction("shutdown", "Desligando o WSL", "Fechando terminais, o Docker Desktop (se ligado) e as distros", shutdownWsl);
+    },
   };
 }

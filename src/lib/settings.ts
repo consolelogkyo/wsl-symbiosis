@@ -20,6 +20,8 @@ export interface Settings {
   setupWizardSeen?: boolean;
   /** What ✕ / Alt+F4 does: ask (CloseDialog), hide to the tray, or quit. */
   closeBehavior?: CloseBehavior;
+  /** Interface transitions off (only `setReduceMotion` changes it). */
+  reduceMotion?: boolean;
 }
 
 export type GitAuth = "auto" | "ssh" | "remote";
@@ -35,5 +37,12 @@ export const saveSettings = (settings: Settings) => invoke<SettingsSnapshot>("sa
 /** "Lembrar minha escolha" in the close dialog (changes only this field). */
 export const setCloseBehavior = (behavior: CloseBehavior) =>
   invoke<SettingsSnapshot>("set_close_behavior", { behavior });
+/** "Animações da interface" (Configurações → Aparência), applied right away. */
+export const setReduceMotion = (reduce: boolean) => invoke<SettingsSnapshot>("set_reduce_motion", { reduce });
+
+/** `data-motion="off"` on <html> turns transitions and entrance animations off (index.css). */
+export function applyMotion(reduce: boolean | undefined) {
+  document.documentElement.dataset.motion = reduce ? "off" : "on";
+}
 /** Normalized path, null for empty input; rejects with the reason it can't be used. */
 export const checkToolPath = (path: string) => invoke<string | null>("check_tool_path", { path });
